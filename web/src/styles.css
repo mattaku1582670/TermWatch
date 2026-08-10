@@ -1,0 +1,351 @@
+/*
+ * TermWatch Web UI スタイル。
+ * iPhone縦向き（幅320px以上）を第一対象としたダークテーマ。
+ */
+
+:root {
+  --bg: #0d1117;
+  --bg-elevated: #161b22;
+  --bg-input: #0b0f14;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-dim: #9198a1;
+  --accent: #2f81f7;
+  --danger: #f85149;
+  --ok: #3fb950;
+  --warn: #d29922;
+  /* iOSのソフトウェアキーボード表示時に visualViewport から更新する */
+  --app-height: 100dvh;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Yu Gothic UI', sans-serif;
+  overscroll-behavior: none;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  min-height: 44px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* ---------------- ペアリング ---------------- */
+
+.pairing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100dvh;
+  padding: 20px;
+}
+
+.pairing-card {
+  width: 100%;
+  max-width: 360px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.pairing-card h1 {
+  margin: 0 0 12px;
+  font-size: 20px;
+}
+
+.pairing-lead {
+  margin: 0 0 16px;
+  font-size: 14px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+#pairing-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#pairing-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 20px;
+  letter-spacing: 0.16em;
+  text-align: center;
+  padding: 12px;
+  min-height: 48px;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.pairing-error {
+  margin: 12px 0 0;
+  color: var(--danger);
+  font-size: 14px;
+}
+
+.pairing-note {
+  margin: 16px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+/* ---------------- メイン ---------------- */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: var(--app-height);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
+
+.header {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+.header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.command-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.header-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  gap: 10px;
+}
+
+.meta.warn {
+  color: var(--warn);
+}
+
+.meta.danger {
+  color: var(--danger);
+}
+
+.meta.ok {
+  color: var(--ok);
+}
+
+.badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.badge-control {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.terminal-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #000;
+}
+
+.terminal {
+  position: absolute;
+  inset: 0;
+  padding: 2px;
+}
+
+.jump-latest {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 5;
+  font-size: 12px;
+  min-height: 36px;
+  padding: 6px 12px;
+  opacity: 0.92;
+}
+
+.notice {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: #1f2937;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.notice.warn {
+  color: var(--warn);
+}
+
+.notice.danger {
+  color: var(--danger);
+}
+
+.controls {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 6px;
+}
+
+.keybar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.keybar button {
+  flex: 0 0 auto;
+  min-width: 48px;
+  min-height: 40px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.input-area {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+#text-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 16px; /* 16px未満だとiOSで自動ズームする */
+  line-height: 1.4;
+  padding: 8px;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.input-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.input-buttons button {
+  min-height: 40px;
+  padding: 6px 10px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+@media (max-width: 360px) {
+  .input-buttons button {
+    min-width: 84px;
+    padding: 6px;
+    font-size: 12px;
+  }
+}
+
+/* ---------------- 確認ダイアログ ---------------- */
+
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 100;
+}
+
+.confirm-card {
+  width: 100%;
+  max-width: 320px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+}
+
+.confirm-card h2 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.confirm-card p {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+.confirm-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}

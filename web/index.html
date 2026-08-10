@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1"
+    />
+    <meta name="color-scheme" content="dark" />
+    <meta name="referrer" content="no-referrer" />
+    <title>TermWatch</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <!-- ペアリング画面 -->
+    <section id="pairing" class="pairing" aria-labelledby="pairing-title">
+      <div class="pairing-card">
+        <h1 id="pairing-title">TermWatch</h1>
+        <p class="pairing-lead">
+          PC側ターミナルに表示されているペアリングコードを入力してください。
+        </p>
+        <form id="pairing-form" autocomplete="off">
+          <label class="visually-hidden" for="pairing-input">ペアリングコード</label>
+          <input
+            id="pairing-input"
+            type="text"
+            inputmode="text"
+            autocapitalize="characters"
+            autocorrect="off"
+            spellcheck="false"
+            placeholder="XXXX-XXXX"
+            maxlength="16"
+            required
+          />
+          <button type="submit" id="pairing-submit">接続</button>
+        </form>
+        <p id="pairing-error" class="pairing-error" role="alert" hidden></p>
+        <p class="pairing-note">
+          コードは起動から10分、または最初の接続成功で失効します。
+        </p>
+      </div>
+    </section>
+
+    <!-- メイン画面 -->
+    <main id="app" class="app" hidden>
+      <header class="header">
+        <div class="header-row">
+          <span id="command-name" class="command-name">-</span>
+          <span id="mode-badge" class="badge badge-view">閲覧モード</span>
+        </div>
+        <div class="header-row header-meta">
+          <span id="conn-state" class="meta">接続中…</span>
+          <span id="proc-state" class="meta">-</span>
+          <span id="idle-time" class="meta"></span>
+          <span id="control-remaining" class="meta"></span>
+        </div>
+      </header>
+
+      <div class="terminal-wrap">
+        <div id="terminal" class="terminal"></div>
+        <button id="jump-latest" class="jump-latest" hidden>最新位置へ</button>
+      </div>
+
+      <div id="notice" class="notice" role="status" hidden></div>
+
+      <section class="controls">
+        <div class="keybar" id="keybar">
+          <button type="button" data-key="enter">Enter</button>
+          <button type="button" data-key="escape">Esc</button>
+          <button type="button" data-key="tab">Tab</button>
+          <button type="button" data-key="up">↑</button>
+          <button type="button" data-key="down">↓</button>
+          <button type="button" data-key="left">←</button>
+          <button type="button" data-key="right">→</button>
+          <button type="button" data-key="y">y</button>
+          <button type="button" data-key="n">n</button>
+          <button type="button" data-key="ctrl-c" class="danger">Ctrl+C</button>
+        </div>
+
+        <div class="input-area">
+          <label class="visually-hidden" for="text-input">送信するテキスト</label>
+          <textarea
+            id="text-input"
+            rows="2"
+            placeholder="操作モードを有効にすると入力できます"
+            disabled
+          ></textarea>
+          <div class="input-buttons">
+            <button type="button" id="send-button" disabled>送信</button>
+            <button type="button" id="control-toggle">操作モードにする</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- 確認ダイアログ -->
+    <div id="confirm" class="confirm-backdrop" hidden>
+      <div class="confirm-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <h2 id="confirm-title">確認</h2>
+        <p id="confirm-body"></p>
+        <div class="confirm-buttons">
+          <button type="button" id="confirm-cancel">キャンセル</button>
+          <button type="button" id="confirm-ok" class="danger">実行する</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
