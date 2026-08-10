@@ -44,6 +44,11 @@ const MAX_CLIENTS = 8;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 /** 終了時、接続のクローズを待つ最大時間。 */
 const CLOSE_TIMEOUT_MS = 1000;
+/**
+ * bracketed paste のあと、確定のEnterを送るまでの待ち時間。
+ * 受け手が貼り付けを処理し終えるのを待つ。
+ */
+const SUBMIT_DELAY_MS = 120;
 
 export interface ServerOptions {
   readonly port: number;
@@ -82,6 +87,8 @@ export class TermWatchServer {
   private statusTimer: NodeJS.Timeout | null = null;
   private backpressureTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  /** 送信確定Enterの遅延タイマー。終了時に破棄する。 */
+  private readonly submitTimers = new Set<NodeJS.Timeout>();
   private closePromise: Promise<void> | null = null;
 
   /** リモート操作モードの有無が変化したときに呼ばれる。 */
@@ -542,7 +549,7 @@ export class TermWatchServer {
 
       case 'input.text': {
         if (!this.assertControl(client)) return;
-        this.writeToPty(client, encodeTextInput(message.text, message.submit));
+        this.sendTextInput(client, message.text, message.submit);
         return;
       }
 
@@ -564,6 +571,42 @@ export class TermWatchServer {
       return false;
     }
     return true;
+  }
+
+  /**
+   * テキスト入力をPTYへ書き込む。
+   *
+   * bracketed paste を使った場合、確定のEnterを同じ書き込みに含めてはならない。
+   * 受け手のTUIはPTYをチャンク単位で読むため、同じ読み取りに入ったCRを
+   * 貼り付け処理の一部として吸収してしまい、確定されない
+   * （Codex CLI で実測。docs/DECISIONS.md D-007）。
+   * そのため貼り付けを送ってから少し遅らせて、別の書き込みでEnterを送る。
+   *
+   * 単一行（bracketed paste を使わない場合）は従来どおり同時に送る。
+   */
+  private sendTextInput(client: ClientState, text: string, submit: boolean): void {
+    const body = encodeTextInput(text);
+    const usedPaste = body.startsWith(BRACKETED_PASTE_START);
+
+    if (body.length > 0) {
+      this.writeToPty(client, body);
+    }
+    if (!submit) return;
+
+    if (!usedPaste) {
+      this.writeToPty(client, CARRIAGE_RETURN);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.submitTimers.delete(timer);
+      // 遅延中に操作権を失った場合は送らない。
+      if (!this.control.isHolder(client.controlHandle)) return;
+      if (client.ws.readyState !== client.ws.OPEN) return;
+      this.writeToPty(client, CARRIAGE_RETURN);
+    }, SUBMIT_DELAY_MS);
+    timer.unref();
+    this.submitTimers.add(timer);
   }
 
   private writeToPty(client: ClientState, data: string): void {
@@ -733,6 +776,9 @@ export class TermWatchServer {
     this.backpressureTimer = null;
     this.heartbeatTimer = null;
 
+    for (const timer of this.submitTimers) clearTimeout(timer);
+    this.submitTimers.clear();
+
     this.control.dispose();
 
     const clients = [...this.clients];
@@ -779,24 +825,22 @@ export class TermWatchServer {
  *   これがEnterキー相当となり、貼り付けた内容全体が1つの指示として確定する。
  */
 const ESC = String.fromCharCode(0x1b);
+const CARRIAGE_RETURN = String.fromCharCode(13);
 const BRACKETED_PASTE_START = `${ESC}[200~`;
 const BRACKETED_PASTE_END = `${ESC}[201~`;
 
-export function encodeTextInput(text: string, submit: boolean): string {
+export function encodeTextInput(text: string): string {
   // 改行表現を LF へ正規化する（CRLF / CR のどちらで届いても同じ結果にする）。
-  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const multiline = normalized.includes('\n');
+  const normalized = text
+    .split(String.fromCharCode(13) + String.fromCharCode(10))
+    .join(String.fromCharCode(10))
+    .split(String.fromCharCode(13))
+    .join(String.fromCharCode(10));
 
-  let out = '';
-  if (normalized.length > 0) {
-    out += multiline
-      ? // 複数行: LF のまま bracketed paste で囲む。
-        `${BRACKETED_PASTE_START}${normalized}${BRACKETED_PASTE_END}`
-      : // 単一行: そのまま入力として送る。
-        normalized;
-  }
-  if (submit) {
-    out += '\r';
-  }
-  return out;
+  if (normalized.length === 0) return '';
+
+  // 複数行: LF のまま bracketed paste で囲む。単一行: そのまま送る。
+  return normalized.includes(String.fromCharCode(10))
+    ? `${BRACKETED_PASTE_START}${normalized}${BRACKETED_PASTE_END}`
+    : normalized;
 }

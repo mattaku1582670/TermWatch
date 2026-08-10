@@ -4,6 +4,8 @@ import { encodeTextInput } from '../../src/server/server.js';
 import { MAX_TEXT_INPUT_BYTES, SPECIAL_KEY_SEQUENCES } from '../../src/shared/protocol.js';
 
 const ESC = String.fromCharCode(0x1b);
+const CR = String.fromCharCode(13);
+const LF = String.fromCharCode(10);
 
 describe('parseClientMessage', () => {
   it('正しいメッセージを受理する', () => {
@@ -99,38 +101,38 @@ describe('特殊キーのエンコード', () => {
 });
 
 describe('encodeTextInput', () => {
-  it('単一行はそのまま送り、最後にCRを付ける', () => {
-    expect(encodeTextInput('hello', true)).toBe('hello\r');
-    expect(encodeTextInput('hello', false)).toBe('hello');
+  // 確定のEnterは encodeTextInput では付けない。
+  // bracketed paste と同じ書き込みにCRを含めると、受け手のTUIが貼り付け処理の一部として
+  // 吸収してしまい確定されないため、サーバー側で遅延させて別に送る（D-007）。
+
+  it('単一行はそのまま返す（Enterは含めない）', () => {
+    expect(encodeTextInput('hello')).toBe('hello');
   });
 
-  it('複数行は bracketed paste で囲み、内側の改行は LF のまま送る', () => {
-    const encoded = encodeTextInput('一行目\n二行目', true);
-    expect(encoded).toBe(`${ESC}[200~一行目\n二行目${ESC}[201~\r`);
+  it('複数行は bracketed paste で囲み、内側の改行は LF のまま返す', () => {
+    expect(encodeTextInput('一行目' + LF + '二行目'))
+      .toBe(`${ESC}[200~一行目
+二行目${ESC}[201~`);
   });
 
   it('貼り付けブロックの内側にCRを入れない（改行位置での分割送信を防ぐ）', () => {
-    // 内側にCRがあると、受け手のTUIがEnterと解釈して指示が分割されてしまう。
-    const encoded = encodeTextInput('一行目\n二行目\n三行目', true);
-    const start = encoded.indexOf(`${ESC}[200~`) + 6;
-    const end = encoded.indexOf(`${ESC}[201~`);
-    expect(encoded.slice(start, end)).not.toContain('\r');
-    // 送信のCRは貼り付けブロックの外側に1つだけ。
-    expect(encoded.slice(end)).toBe(`${ESC}[201~\r`);
+    const encoded = encodeTextInput('一行目' + LF + '二行目' + LF + '三行目');
+    expect(encoded).not.toContain(CR);
   });
 
   it('CRLF と CR を LF へ正規化する', () => {
-    expect(encodeTextInput('a\r\nb', false)).toBe(`${ESC}[200~a\nb${ESC}[201~`);
-    expect(encodeTextInput('a\rb', false)).toBe(`${ESC}[200~a\nb${ESC}[201~`);
+    expect(encodeTextInput('a' + CR + LF + 'b')).toBe(`${ESC}[200~a
+b${ESC}[201~`);
+    expect(encodeTextInput('a' + CR + 'b')).toBe(`${ESC}[200~a
+b${ESC}[201~`);
   });
 
-  it('末尾が改行でも1回の送信で確定する', () => {
-    const encoded = encodeTextInput('指示\n', true);
-    expect(encoded).toBe(`${ESC}[200~指示\n${ESC}[201~\r`);
+  it('末尾が改行の場合も貼り付けとして扱う', () => {
+    expect(encodeTextInput('指示' + LF)).toBe(`${ESC}[200~指示
+${ESC}[201~`);
   });
 
-  it('空文字でも submit なら Enter だけ送る', () => {
-    expect(encodeTextInput('', true)).toBe('\r');
-    expect(encodeTextInput('', false)).toBe('');
+  it('空文字は空を返す', () => {
+    expect(encodeTextInput('')).toBe('');
   });
 });
