@@ -104,17 +104,29 @@ describe('encodeTextInput', () => {
     expect(encodeTextInput('hello', false)).toBe('hello');
   });
 
-  it('複数行は bracketed paste で囲む', () => {
+  it('複数行は bracketed paste で囲み、内側の改行は LF のまま送る', () => {
     const encoded = encodeTextInput('一行目\n二行目', true);
-    expect(encoded.startsWith(`${ESC}[200~`)).toBe(true);
-    expect(encoded).toContain(`${ESC}[201~`);
-    expect(encoded.endsWith('\r')).toBe(true);
-    // 途中の改行はCRへ変換され、bracketed paste内に収まる。
-    expect(encoded).toBe(`${ESC}[200~一行目\r二行目${ESC}[201~\r`);
+    expect(encoded).toBe(`${ESC}[200~一行目\n二行目${ESC}[201~\r`);
   });
 
-  it('CRLFを正規化する', () => {
-    expect(encodeTextInput('a\r\nb', false)).toBe(`${ESC}[200~a\rb${ESC}[201~`);
+  it('貼り付けブロックの内側にCRを入れない（改行位置での分割送信を防ぐ）', () => {
+    // 内側にCRがあると、受け手のTUIがEnterと解釈して指示が分割されてしまう。
+    const encoded = encodeTextInput('一行目\n二行目\n三行目', true);
+    const start = encoded.indexOf(`${ESC}[200~`) + 6;
+    const end = encoded.indexOf(`${ESC}[201~`);
+    expect(encoded.slice(start, end)).not.toContain('\r');
+    // 送信のCRは貼り付けブロックの外側に1つだけ。
+    expect(encoded.slice(end)).toBe(`${ESC}[201~\r`);
+  });
+
+  it('CRLF と CR を LF へ正規化する', () => {
+    expect(encodeTextInput('a\r\nb', false)).toBe(`${ESC}[200~a\nb${ESC}[201~`);
+    expect(encodeTextInput('a\rb', false)).toBe(`${ESC}[200~a\nb${ESC}[201~`);
+  });
+
+  it('末尾が改行でも1回の送信で確定する', () => {
+    const encoded = encodeTextInput('指示\n', true);
+    expect(encoded).toBe(`${ESC}[200~指示\n${ESC}[201~\r`);
   });
 
   it('空文字でも submit なら Enter だけ送る', () => {

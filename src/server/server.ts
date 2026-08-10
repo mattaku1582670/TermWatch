@@ -769,21 +769,31 @@ export class TermWatchServer {
 /**
  * リモートからのテキスト入力をPTYバイト列へ変換する。
  *
- * 複数行のテキストは bracketed paste で囲み、途中の改行で誤送信されるのを防ぐ。
- * 送信フラグが立っていれば最後にEnter（CR）を送る。
+ * 複数行のテキストは bracketed paste（ESC[200~ ... ESC[201~）で囲む。
+ *
+ * 改行の扱い（docs/DECISIONS.md D-007）:
+ * - bracketed paste の**内側**は LF のまま送る。
+ *   ここを CR にすると、受け手のTUIが1文字ずつ Enter キーとして解釈し、
+ *   改行位置で指示が分割されてしまう（Codex CLI で実際に発生した）。
+ * - 「送信」は貼り付けブロックの**外側**に CR を1つ置くことで表現する。
+ *   これがEnterキー相当となり、貼り付けた内容全体が1つの指示として確定する。
  */
 const ESC = String.fromCharCode(0x1b);
 const BRACKETED_PASTE_START = `${ESC}[200~`;
 const BRACKETED_PASTE_END = `${ESC}[201~`;
 
 export function encodeTextInput(text: string, submit: boolean): string {
+  // 改行表現を LF へ正規化する（CRLF / CR のどちらで届いても同じ結果にする）。
   const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const multiline = normalized.includes('\n');
-  const body = normalized.replace(/\n/g, '\r');
 
   let out = '';
-  if (body.length > 0) {
-    out += multiline ? `${BRACKETED_PASTE_START}${body}${BRACKETED_PASTE_END}` : body;
+  if (normalized.length > 0) {
+    out += multiline
+      ? // 複数行: LF のまま bracketed paste で囲む。
+        `${BRACKETED_PASTE_START}${normalized}${BRACKETED_PASTE_END}`
+      : // 単一行: そのまま入力として送る。
+        normalized;
   }
   if (submit) {
     out += '\r';
