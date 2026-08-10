@@ -63,6 +63,9 @@ export function buildBanner(input: BannerInput): string {
     if (input.pairingCode !== null) {
       lines.push(`  ペアリングコード: ${input.pairingCode}`);
       lines.push('  （10分、または最初の認証成功で失効します）');
+      lines.push('');
+      lines.push('  この表示は子プロセスの画面描画で消えることがあります。');
+      lines.push('  そのときはターミナルの**ウィンドウタイトル**にも同じコードが出ています。');
     }
   }
 

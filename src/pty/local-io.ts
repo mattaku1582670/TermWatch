@@ -27,6 +27,9 @@ export class LocalIo {
   private onStdinData: ((chunk: Buffer) => void) | null = null;
   private onResize: (() => void) | null = null;
   private readonly decoder = new StringDecoder('utf8');
+  private remoteControlActive = false;
+  private pairingCode: string | null = null;
+  private lastTitle: string | null = null;
 
   constructor(
     private readonly session: PtySession,
@@ -79,9 +82,39 @@ export class LocalIo {
    * ウィンドウタイトル（OSC 2）だけを更新する。
    */
   setRemoteControlIndicator(active: boolean): void {
+    this.remoteControlActive = active;
+    this.writeTitle();
+  }
+
+  /**
+   * 有効なペアリングコードをタイトルへ表示する（失効したら null を渡す）。
+   *
+   * 起動時のバナー表示だけでは、子プロセスが画面消去（ESC[2J）を行った時点で
+   * コードが読めなくなる。タイトルは画面バッファとは独立しているため消えない。
+   */
+  setPairingCode(code: string | null): void {
+    this.pairingCode = code;
+    this.writeTitle();
+  }
+
+  /** タイトルを組み立てて書き込む。内容が変わらなければ何もしない。 */
+  writeTitle(): void {
     if (!this.options.useTitleIndicator) return;
-    const suffix = active ? ' [リモート操作モード有効]' : '';
-    this.options.stdout.write(`\u001b]2;${this.options.titleBase}${suffix}\u0007`);
+    let title = this.options.titleBase;
+    if (this.pairingCode !== null) title += ` [ペアリングコード ${this.pairingCode}]`;
+    if (this.remoteControlActive) title += ' [リモート操作モード有効]';
+    if (title === this.lastTitle) return;
+    this.lastTitle = title;
+    this.options.stdout.write(`\u001b]2;${title}\u0007`);
+  }
+
+  /**
+   * 子プロセスが自分でタイトルを設定して上書きすることがあるため、
+   * 差分チェックを無視して強制的に書き直す。
+   */
+  refreshTitle(): void {
+    this.lastTitle = null;
+    this.writeTitle();
   }
 
   /** raw modeとカーソル状態を復元する。多重呼び出し安全。 */

@@ -20,6 +20,8 @@ const EXIT_COMMAND_NOT_FOUND = 127;
 const EXIT_SERVER_ERROR = 3;
 /** 子プロセス終了を通知するための猶予（ミリ秒）。 */
 const SHUTDOWN_GRACE_MS = 3000;
+/** ウィンドウタイトルを書き直す間隔（ミリ秒）。 */
+const TITLE_REFRESH_MS = 2000;
 
 function readVersion(): string {
   // 開発時（dist/app/cli/main.js）とポータブル版（app/cli/main.js）の双方を試す。
@@ -142,10 +144,29 @@ export async function main(argv: readonly string[]): Promise<number> {
     };
   }
 
+  // ペアリングコードをウィンドウタイトルへ出し続ける。
+  //
+  // バナーは子プロセスの画面消去（ESC[2J）で消えてしまうため、起動直後に一度
+  // 表示するだけでは、あとからスマートフォンを接続したいときにコードを確認できない。
+  // タイトルは画面バッファとは独立しているので消えない。
+  // 子プロセスが自分でタイトルを設定して上書きすることがあるため、定期的に書き直す。
+  let titleTimer: NodeJS.Timeout | null = null;
+  if (!options.localOnly) {
+    localIo.setPairingCode(auth.getPairingCodeForDisplay());
+    titleTimer = setInterval(() => {
+      const code = auth.getPairingCodeForDisplay();
+      // 認証成功または期限切れで失効したら、タイトルからも消す。
+      localIo.setPairingCode(auth.isPairingActive() ? code : null);
+      localIo.refreshTitle();
+    }, TITLE_REFRESH_MS);
+    titleTimer.unref();
+  }
+
   let cleanedUp = false;
   const cleanup = async (): Promise<void> => {
     if (cleanedUp) return;
     cleanedUp = true;
+    if (titleTimer !== null) clearInterval(titleTimer);
     auth.revoke();
     localIo.restore();
     await server?.close();
