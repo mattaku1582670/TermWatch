@@ -22,6 +22,9 @@ export interface LocalIoOptions {
 }
 
 export class LocalIo {
+  /** この時間だけPTY出力が無ければ、タイトルを書いても安全とみなす。 */
+  private static readonly TITLE_QUIET_MS = 60;
+
   private attached = false;
   private rawModeApplied = false;
   private onStdinData: ((chunk: Buffer) => void) | null = null;
@@ -30,6 +33,10 @@ export class LocalIo {
   private remoteControlActive = false;
   private pairingCode: string | null = null;
   private lastTitle: string | null = null;
+  /** 最後にPTY出力を書いた時刻。タイトル書き込みの割り込みを避けるために使う。 */
+  private lastOutputAt = 0;
+  /** 出力中で書けなかったタイトル更新が保留されているか。 */
+  private titlePending = false;
 
   constructor(
     private readonly session: PtySession,
@@ -65,6 +72,9 @@ export class LocalIo {
     stdin.on('data', this.onStdinData);
 
     this.session.on('data', (data: string) => {
+      // 出力中はタイトルを書き込まない。エスケープシーケンスの途中に
+      // 割り込むと、断片が文字として表示されてしまう。
+      this.lastOutputAt = Date.now();
       stdout.write(data);
     });
 
@@ -97,22 +107,45 @@ export class LocalIo {
     this.writeTitle();
   }
 
-  /** タイトルを組み立てて書き込む。内容が変わらなければ何もしない。 */
+  /**
+   * タイトルを書き込む。
+   *
+   * PTY出力の直後は書き込まない。子プロセスのエスケープシーケンスは
+   * チャンク境界で分割されて届くことがあり、その途中へ別の書き込みを挟むと
+   * 端末が誤って解釈し、断片（例: `[?2004h`）が文字として画面に出てしまう。
+   * 出力が落ち着くまで保留し、あとで書き直す。
+   */
   writeTitle(): void {
     if (!this.options.useTitleIndicator) return;
+
     let title = this.options.titleBase;
     if (this.pairingCode !== null) title += ` [ペアリングコード ${this.pairingCode}]`;
     if (this.remoteControlActive) title += ' [リモート操作モード有効]';
+
     if (title === this.lastTitle) return;
+
+    if (Date.now() - this.lastOutputAt < LocalIo.TITLE_QUIET_MS) {
+      // 出力中。保留して次の機会に書く。
+      this.titlePending = true;
+      return;
+    }
+
+    this.titlePending = false;
     this.lastTitle = title;
     this.options.stdout.write(`\u001b]2;${title}\u0007`);
   }
 
   /**
    * 子プロセスが自分でタイトルを設定して上書きすることがあるため、
-   * 差分チェックを無視して強制的に書き直す。
+   * 定期的に書き直す。ただし表示すべき内容があるときだけ行い、
+   * 出力中は書き込まない（上記の理由）。
    */
   refreshTitle(): void {
+    if (!this.options.useTitleIndicator) return;
+    const hasIndicator = this.pairingCode !== null || this.remoteControlActive;
+    // 表示するものが無く、保留中の変更も無ければ何も書かない。
+    if (!hasIndicator && !this.titlePending) return;
+    if (Date.now() - this.lastOutputAt < LocalIo.TITLE_QUIET_MS) return;
     this.lastTitle = null;
     this.writeTitle();
   }

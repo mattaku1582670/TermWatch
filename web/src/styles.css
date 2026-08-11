@@ -152,12 +152,28 @@ button.primary {
 
 /* ---------------- メイン ---------------- */
 
+/*
+ * アプリ本体はビジュアルビューポート（実際に見えている領域）へ固定する。
+ * iOS でソフトウェアキーボードが出ると、レイアウトビューポートはそのままで
+ * ビジュアルビューポートだけが縮み、かつ上へずれる。
+ * 高さを --app-height、ずれを --app-offset で合わせることで、
+ * 入力欄が画面外へ押し上げられたり、下に空白が残ったりするのを防ぐ。
+ */
 .app {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--app-height);
+  transform: translateY(var(--app-offset, 0px));
   display: flex;
   flex-direction: column;
-  height: var(--app-height);
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
-    env(safe-area-inset-left);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+
+/* キーボードが出ていないときだけ、下端の safe-area を確保する。 */
+.app:not(.keyboard-open) {
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 .header {

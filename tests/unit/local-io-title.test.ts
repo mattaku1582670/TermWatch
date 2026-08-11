@@ -13,8 +13,16 @@ import type { PtySession } from '../../src/pty/session.js';
 const ESC = String.fromCharCode(0x1b);
 const BEL = String.fromCharCode(0x07);
 
-function createIo(useTitleIndicator = true): { io: LocalIo; written: string[] } {
+interface Harness {
+  io: LocalIo;
+  written: string[];
+  /** PTY出力が届いたことを模擬する。 */
+  emitOutput: (data: string) => void;
+}
+
+function createIo(useTitleIndicator = true): Harness {
   const written: string[] = [];
+  let dataHandler: ((data: string) => void) | null = null;
   const stdout = {
     isTTY: true,
     columns: 100,
@@ -36,7 +44,12 @@ function createIo(useTitleIndicator = true): { io: LocalIo; written: string[] } 
     off: (): void => {},
   } as unknown as NodeJS.ReadStream;
 
-  const session = { write: (): boolean => true, on: (): void => {} } as unknown as PtySession;
+  const session = {
+    write: (): boolean => true,
+    on: (event: string, handler: (data: string) => void): void => {
+      if (event === 'data') dataHandler = handler;
+    },
+  } as unknown as PtySession;
 
   const io = new LocalIo(session, {
     stdin,
@@ -44,8 +57,22 @@ function createIo(useTitleIndicator = true): { io: LocalIo; written: string[] } 
     useTitleIndicator,
     titleBase: 'TermWatch: codex',
   });
-  return { io, written };
+  io.attach();
+  written.length = 0;
+
+  return {
+    io,
+    written,
+    emitOutput: (data: string): void => {
+      dataHandler?.(data);
+      // 出力そのものは検証対象ではないので取り除く。
+      const index = written.indexOf(data);
+      if (index >= 0) written.splice(index, 1);
+    },
+  };
 }
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 describe('ウィンドウタイトル表示', () => {
   it('ペアリングコードをタイトルへ出す', () => {
@@ -97,6 +124,32 @@ describe('ウィンドウタイトル表示', () => {
     written.length = 0;
     io.refreshTitle();
     expect(written).toEqual([`${ESC}]2;TermWatch: codex [ペアリングコード A7KP-3M9X]${BEL}`]);
+  });
+
+  it('PTY出力の直後はタイトルを書き込まない（エスケープシーケンスへの割り込み防止）', () => {
+    const { io, written, emitOutput } = createIo();
+    emitOutput('子プロセスの出力');
+    io.setPairingCode('A7KP-3M9X');
+    // 出力中なので保留され、書き込まれない。
+    expect(written).toEqual([]);
+  });
+
+  it('出力が落ち着いてから保留分を書き込む', async () => {
+    const { io, written, emitOutput } = createIo();
+    emitOutput('子プロセスの出力');
+    io.setPairingCode('A7KP-3M9X');
+    expect(written).toEqual([]);
+
+    await sleep(80);
+    io.refreshTitle();
+    expect(written).toEqual([`${ESC}]2;TermWatch: codex [ペアリングコード A7KP-3M9X]${BEL}`]);
+  });
+
+  it('表示するものが無ければ定期更新で何も書き込まない', () => {
+    const { io, written } = createIo();
+    io.refreshTitle();
+    io.refreshTitle();
+    expect(written).toEqual([]);
   });
 
   it('TTYでない場合は何も書き込まない', () => {

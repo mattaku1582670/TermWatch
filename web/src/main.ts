@@ -466,16 +466,17 @@ pairingForm.addEventListener('submit', (event) => {
 function syncViewportHeight(): void {
   const viewport = window.visualViewport;
   const height = viewport === undefined || viewport === null ? window.innerHeight : viewport.height;
-  document.documentElement.style.setProperty('--app-height', `${Math.round(height)}px`);
+  const root = document.documentElement;
+  root.style.setProperty('--app-height', `${Math.round(height)}px`);
 
-  // キーボード表示時、iOS はページをスクロールして入力欄を見せようとする。
-  // body を固定しているので本来スクロールしないが、
-  // 端末やバージョンによってはずれるため、ずれた分を戻す。
-  if (window.scrollX !== 0 || window.scrollY !== 0) {
-    window.scrollTo(0, 0);
-  }
-  const offset = viewport?.offsetTop ?? 0;
-  appSection.style.transform = offset > 0 ? `translateY(${Math.round(offset)}px)` : '';
+  // キーボード表示時、iOS はビジュアルビューポートを縮めたうえで上へずらす。
+  // ずれた分だけアプリ本体を下げて、見えている領域にぴったり重ねる。
+  const offset = (viewport?.offsetTop ?? 0) + (viewport?.pageTop ?? 0) - window.scrollY;
+  root.style.setProperty('--app-offset', `${Math.round(Math.max(0, offset))}px`);
+
+  // キーボードが出ているかを高さの差から推定し、下端の余白を切り替える。
+  const keyboardOpen = window.innerHeight - height > 120;
+  appSection.classList.toggle('keyboard-open', keyboardOpen);
 
   fitTerminal();
   if (stickToBottom) terminal.scrollToBottom();
