@@ -44,11 +44,12 @@ const MAX_CLIENTS = 8;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 /** 終了時、接続のクローズを待つ最大時間。 */
 const CLOSE_TIMEOUT_MS = 1000;
-/**
- * bracketed paste のあと、確定のEnterを送るまでの待ち時間。
- * 受け手が貼り付けを処理し終えるのを待つ。
- */
-const SUBMIT_DELAY_MS = 120;
+/** 本文を書いたあと、TUIの再描画が落ち着いたとみなすまでの待ち時間。 */
+const SUBMIT_SETTLE_MS = 80;
+/** PTY出力イベント名。 */
+const DATA_EVENT = 'data';
+/** 再描画が観測できない場合に、確定のEnterを送るまでの上限時間。 */
+const SUBMIT_FALLBACK_MS = 600;
 
 export interface ServerOptions {
   readonly port: number;
@@ -586,29 +587,53 @@ export class TermWatchServer {
    */
   private sendTextInput(client: ClientState, text: string, submit: boolean): void {
     const body = encodeTextInput(text);
-    const usedPaste = body.startsWith(BRACKETED_PASTE_START);
-
-    if (body.length > 0) {
-      this.writeToPty(client, body);
-    }
+    this.writeToPty(client, body);
     if (!submit) return;
 
-    if (!usedPaste) {
-      this.writeToPty(client, CARRIAGE_RETURN);
-      return;
-    }
+    // 本文と同じ書き込みにEnterを含めると、受け手のTUIが本文の一部として
+    // 吸収してしまい確定されない（実測。D-007）。
+    // 固定時間だけ待つ方式は相手の描画速度に左右されて不安定だったため、
+    // 「本文を書いたあと、TUIが再描画した（＝入力を処理し終えた）ことを
+    // 出力の到着で検知してから」Enterを送る。出力が来ない場合に備えて上限時間も置く。
+    let fired = false;
+    let settleTimer: NodeJS.Timeout | null = null;
 
-    const timer = setTimeout(() => {
-      this.submitTimers.delete(timer);
-      // 遅延中に操作権を失った場合は送らない。
+    const fire = (): void => {
+      if (fired) return;
+      fired = true;
+      this.options.session.off(DATA_EVENT, onData);
+      if (settleTimer !== null) {
+        clearTimeout(settleTimer);
+        this.submitTimers.delete(settleTimer);
+      }
+      clearTimeout(fallbackTimer);
+      this.submitTimers.delete(fallbackTimer);
+
+      // 待っている間に操作権を失った場合は送らない。
       if (!this.control.isHolder(client.controlHandle)) return;
       if (client.ws.readyState !== client.ws.OPEN) return;
       this.writeToPty(client, CARRIAGE_RETURN);
-    }, SUBMIT_DELAY_MS);
-    timer.unref();
-    this.submitTimers.add(timer);
+    };
+
+    const onData = (): void => {
+      // 再描画を検知。描画が落ち着くまで少しだけ待ってから確定する。
+      if (settleTimer !== null) {
+        clearTimeout(settleTimer);
+        this.submitTimers.delete(settleTimer);
+      }
+      settleTimer = setTimeout(fire, SUBMIT_SETTLE_MS);
+      settleTimer.unref();
+      this.submitTimers.add(settleTimer);
+    };
+
+    this.options.session.on(DATA_EVENT, onData);
+
+    const fallbackTimer = setTimeout(fire, SUBMIT_FALLBACK_MS);
+    fallbackTimer.unref();
+    this.submitTimers.add(fallbackTimer);
   }
 
+  
   private writeToPty(client: ClientState, data: string): void {
     if (data.length === 0) return;
     if (!this.options.session.write(data)) {

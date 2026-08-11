@@ -467,6 +467,16 @@ function syncViewportHeight(): void {
   const viewport = window.visualViewport;
   const height = viewport === undefined || viewport === null ? window.innerHeight : viewport.height;
   document.documentElement.style.setProperty('--app-height', `${Math.round(height)}px`);
+
+  // キーボード表示時、iOS はページをスクロールして入力欄を見せようとする。
+  // body を固定しているので本来スクロールしないが、
+  // 端末やバージョンによってはずれるため、ずれた分を戻す。
+  if (window.scrollX !== 0 || window.scrollY !== 0) {
+    window.scrollTo(0, 0);
+  }
+  const offset = viewport?.offsetTop ?? 0;
+  appSection.style.transform = offset > 0 ? `translateY(${Math.round(offset)}px)` : '';
+
   fitTerminal();
   if (stickToBottom) terminal.scrollToBottom();
 }

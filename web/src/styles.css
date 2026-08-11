@@ -33,6 +33,19 @@ body {
   overscroll-behavior: none;
 }
 
+/*
+ * iOS でソフトウェアキーボードが出ると、ページ自体がスクロールして
+ * 入力欄が画面外へ押し上げられ、下に空白が残ることがある。
+ * 文書をビューポートへ固定し、ページ全体のスクロールを起こさせない。
+ * 表示領域の高さは --app-height（visualViewport から更新）で合わせる。
+ */
+body {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  width: 100%;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
