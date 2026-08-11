@@ -21,9 +21,54 @@ export interface LocalIoOptions {
   readonly titleBase: string;
 }
 
+const ESCAPE = String.fromCharCode(0x1b);
+const BELL = String.fromCharCode(0x07);
+
+/**
+ * 末尾のエスケープシーケンスが未完かどうかを判定する。
+ *
+ * 未完のまま PTY へ書き込むと、ConPTY の win32 input mode が
+ * それぞれを別のキー入力として解釈してしまう（矢印キーが `[A` になるなど）。
+ *
+ * 判定は末尾の ESC 以降だけを見る。それより前は既に完結しているため。
+ */
+export function isIncompleteEscapeSequence(text: string): boolean {
+  const start = text.lastIndexOf(ESCAPE);
+  if (start < 0) return false;
+
+  const rest = text.slice(start);
+  // ESC だけ。続きが来るかもしれない（単独の Esc キーの可能性もある）。
+  if (rest.length === 1) return true;
+
+  const kind = rest[1];
+
+  // CSI: ESC [ <パラメーター> <終端文字(0x40-0x7E)>
+  if (kind === String.fromCharCode(0x5b)) {
+    for (let i = 2; i < rest.length; i += 1) {
+      const code = rest.charCodeAt(i);
+      if (code >= 0x40 && code <= 0x7e) return false;
+    }
+    return true;
+  }
+
+  // SS3: ESC O <1文字>（ファンクションキーなど）
+  if (kind === 'O') return rest.length < 3;
+
+  // OSC: ESC ] ... BEL もしくは ESC \\
+  if (kind === String.fromCharCode(0x5d)) {
+    if (rest.includes(BELL)) return false;
+    return !rest.slice(2).includes(ESCAPE + String.fromCharCode(0x5c));
+  }
+
+  // ESC + 1文字（Alt+キーなど）は完結している。
+  return false;
+}
+
 export class LocalIo {
   /** この時間だけPTY出力が無ければ、タイトルを書いても安全とみなす。 */
   private static readonly TITLE_QUIET_MS = 60;
+  /** 途中で切れたエスケープシーケンスの続きを待つ時間。 */
+  private static readonly ESCAPE_JOIN_MS = 20;
 
   private attached = false;
   private rawModeApplied = false;
@@ -37,6 +82,10 @@ export class LocalIo {
   private lastOutputAt = 0;
   /** 出力中で書けなかったタイトル更新が保留されているか。 */
   private titlePending = false;
+  /** まだPTYへ書いていないPC側入力。 */
+  private pendingInput = '';
+  /** エスケープシーケンスの続きを待つタイマー。 */
+  private escapeTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly session: PtySession,
@@ -67,7 +116,9 @@ export class LocalIo {
       // 日本語などのマルチバイト文字がチャンク境界で分割されても壊れないよう、
       // StringDecoder で持ち越して結合する。
       const text = this.decoder.write(chunk);
-      if (text.length > 0) this.session.write(text);
+      if (text.length === 0) return;
+      this.pendingInput += text;
+      this.flushLocalInput();
     };
     stdin.on('data', this.onStdinData);
 
@@ -83,6 +134,39 @@ export class LocalIo {
       this.session.resize(size.cols, size.rows);
     };
     stdout.on('resize', this.onResize);
+  }
+
+  /**
+   * PC側の入力をPTYへ渡す。
+   *
+   * エスケープシーケンス（矢印キーの `ESC[A` など）は、端末から
+   * 分割して届くことがある。Windows の ConPTY は win32 input mode で
+   * 書き込み単位をキー入力へ変換するため、`ESC` と `[A` が別々の書き込みに
+   * なると「Escキー」＋「文字 [ A」と解釈され、矢印キーが機能しなくなる。
+   *
+   * そのため、途中で切れているエスケープシーケンスは少しだけ保持して、
+   * 続きが届いてからまとめて書き込む。通常の文字は保持せず即座に送るので、
+   * ローカル入力の体感遅延には影響しない。
+   */
+  private flushLocalInput(force = false): void {
+    if (this.escapeTimer !== null) {
+      clearTimeout(this.escapeTimer);
+      this.escapeTimer = null;
+    }
+
+    if (!force && isIncompleteEscapeSequence(this.pendingInput)) {
+      // 続きを少しだけ待つ。単独のEscキー押下もこの時間で送られる。
+      this.escapeTimer = setTimeout(() => {
+        this.escapeTimer = null;
+        this.flushLocalInput(true);
+      }, LocalIo.ESCAPE_JOIN_MS);
+      this.escapeTimer.unref?.();
+      return;
+    }
+
+    const data = this.pendingInput;
+    this.pendingInput = '';
+    if (data.length > 0) this.session.write(data);
   }
 
   /**
@@ -154,6 +238,17 @@ export class LocalIo {
   restore(): void {
     if (!this.attached) return;
     this.attached = false;
+
+    // 保持したままの入力を取りこぼさないよう、最後に書き出す。
+    if (this.escapeTimer !== null) {
+      clearTimeout(this.escapeTimer);
+      this.escapeTimer = null;
+    }
+    if (this.pendingInput.length > 0) {
+      const data = this.pendingInput;
+      this.pendingInput = '';
+      this.session.write(data);
+    }
 
     const { stdin, stdout } = this.options;
 
