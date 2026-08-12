@@ -1,4 +1,5 @@
 import { StringDecoder } from 'node:string_decoder';
+import { traceInput } from './input-trace.js';
 import type { PtySession } from './session.js';
 
 /**
@@ -64,6 +65,49 @@ export function isIncompleteEscapeSequence(text: string): boolean {
   return false;
 }
 
+/** win32 input mode のレコード: CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _ */
+const WIN32_INPUT_RECORD = new RegExp(`${ESCAPE}\\[([0-9;]*)_`, 'g');
+/** 繰り返し回数の上限。壊れた入力で大量生成しないための保険。 */
+const MAX_REPEAT = 1024;
+
+/**
+ * PC側ターミナルが win32 input mode で送ってきた入力を、生のバイト列へ戻す。
+ *
+ * 子プロセス（Codex など）が `ESC[?9001h` を出すと、その要求は TermWatch を
+ * 素通りして VS Code のターミナルへ届く。するとターミナルはキー入力を
+ * レコード形式で送ってくるが、矢印キーは仮想キーコードを伴わず
+ * `ESC` `[` `A` の3文字ぶんのレコードに分解されてしまう（実測。D-019）。
+ *
+ * これをそのまま ConPTY へ渡すと3打鍵として扱われ、子プロセスには
+ * 「Escキー」＋文字 `[` ＋文字 `A` として届く（画面には `[A` と出る）。
+ * 文字コードへ復号して1本のバイト列に戻せば、ConPTY が本来のキーへ変換する。
+ *
+ * - 離すイベント（Kd=0）は捨てる。押下と両方を採用すると二重入力になる。
+ * - 文字を伴わないキー（Uc=0、Shift 単独など）は捨てる。
+ */
+export function decodeWin32InputMode(text: string): string {
+  // 終端文字 `_` を含まなければ、このモードのレコードは存在しない。
+  if (!text.includes(String.fromCharCode(0x5f))) return text;
+
+  return text.replace(WIN32_INPUT_RECORD, (match: string, params: string): string => {
+    const fields = params.split(';');
+    // 6項目そろっていないものは win32 input mode ではないとみなし、手を触れない。
+    if (fields.length < 6) return match;
+
+    const num = (index: number): number => {
+      const value = Number.parseInt(fields[index] ?? '', 10);
+      return Number.isFinite(value) ? value : 0;
+    };
+
+    if (num(3) === 0) return ''; // 離すイベント
+    const unicode = num(2);
+    if (unicode <= 0 || unicode > 0x10ffff) return ''; // 文字を伴わないキー
+
+    const repeat = Math.min(Math.max(num(5), 1), MAX_REPEAT);
+    return String.fromCodePoint(unicode).repeat(repeat);
+  });
+}
+
 export class LocalIo {
   /** この時間だけPTY出力が無ければ、タイトルを書いても安全とみなす。 */
   private static readonly TITLE_QUIET_MS = 60;
@@ -116,6 +160,7 @@ export class LocalIo {
       // 日本語などのマルチバイト文字がチャンク境界で分割されても壊れないよう、
       // StringDecoder で持ち越して結合する。
       const text = this.decoder.write(chunk);
+      traceInput('stdin受信', text);
       if (text.length === 0) return;
       this.pendingInput += text;
       this.flushLocalInput();
@@ -164,8 +209,12 @@ export class LocalIo {
       return;
     }
 
-    const data = this.pendingInput;
+    const raw = this.pendingInput;
     this.pendingInput = '';
+    if (raw.length === 0) return;
+
+    // win32 input mode のレコードは生のバイト列へ戻してから渡す。
+    const data = decodeWin32InputMode(raw);
     if (data.length > 0) this.session.write(data);
   }
 
@@ -245,9 +294,9 @@ export class LocalIo {
       this.escapeTimer = null;
     }
     if (this.pendingInput.length > 0) {
-      const data = this.pendingInput;
+      const data = decodeWin32InputMode(this.pendingInput);
       this.pendingInput = '';
-      this.session.write(data);
+      if (data.length > 0) this.session.write(data);
     }
 
     const { stdin, stdout } = this.options;

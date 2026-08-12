@@ -3,6 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { HELP_TEXT, parseArgs } from './args.js';
 import { resolveWorkdir } from './workdir.js';
 import { buildBanner, buildNonTtyWarning } from './banner.js';
+import { initInputTrace } from '../pty/input-trace.js';
 import { LocalIo } from '../pty/local-io.js';
 import { PtySession } from '../pty/session.js';
 import { SessionAuth } from '../security/tokens.js';
@@ -134,6 +135,14 @@ export async function main(argv: readonly string[]): Promise<number> {
 
   if (process.stdin.isTTY !== true) {
     process.stdout.write(`${buildNonTtyWarning()}\n`);
+  }
+
+  const tracePath = initInputTrace();
+  if (tracePath !== null) {
+    process.stdout.write(
+      `[診断] 入力の記録が有効です: ${tracePath}\n` +
+        `[診断] このPCで入力したキーがそのまま保存されます。調査後は環境変数 TERMWATCH_DEBUG_INPUT を解除してください。\n`,
+    );
   }
 
   localIo.attach();

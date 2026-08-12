@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { LocalIo, isIncompleteEscapeSequence } from '../../src/pty/local-io.js';
+import {
+  LocalIo,
+  decodeWin32InputMode,
+  isIncompleteEscapeSequence,
+} from '../../src/pty/local-io.js';
 import type { PtySession } from '../../src/pty/session.js';
 
 /**
@@ -110,6 +114,51 @@ describe('isIncompleteEscapeSequence', () => {
   });
 });
 
+describe('decodeWin32InputMode', () => {
+  // 実測ログ（D-019）から採取した、VS Code ターミナルが送ってきた実際のバイト列。
+  const UP = `${ESC}[0;0;27;1;0;1_${ESC}[0;0;91;1;0;1_${ESC}[0;0;65;1;0;1_`;
+  const DOWN = `${ESC}[0;0;27;1;0;1_${ESC}[0;0;91;1;0;1_${ESC}[0;0;66;1;0;1_`;
+  const RIGHT = `${ESC}[0;0;27;1;0;1_${ESC}[0;0;91;1;0;1_${ESC}[0;0;67;1;0;1_`;
+  const LEFT = `${ESC}[0;0;27;1;0;1_${ESC}[0;0;91;1;0;1_${ESC}[0;0;68;1;0;1_`;
+  // Ctrl+C は押下と離すの2レコードで届く。
+  const CTRL_C = `${ESC}[67;0;3;1;8;1_${ESC}[67;0;3;0;8;1_`;
+
+  it('矢印キーを本来のエスケープシーケンスへ戻す', () => {
+    expect(decodeWin32InputMode(UP)).toBe(`${ESC}[A`);
+    expect(decodeWin32InputMode(DOWN)).toBe(`${ESC}[B`);
+    expect(decodeWin32InputMode(RIGHT)).toBe(`${ESC}[C`);
+    expect(decodeWin32InputMode(LEFT)).toBe(`${ESC}[D`);
+  });
+
+  it('離すイベントを捨て、Ctrl+Cを1回だけにする', () => {
+    expect(decodeWin32InputMode(CTRL_C)).toBe(String.fromCharCode(3));
+  });
+
+  it('文字を伴わないキー（Uc=0）は捨てる', () => {
+    // Shift 単独の押下。
+    expect(decodeWin32InputMode(`${ESC}[16;42;0;1;16;1_`)).toBe('');
+  });
+
+  it('繰り返し回数のぶんだけ複製する', () => {
+    expect(decodeWin32InputMode(`${ESC}[65;30;97;1;0;3_`)).toBe('aaa');
+  });
+
+  it('win32 input mode ではない入力には手を触れない', () => {
+    expect(decodeWin32InputMode('abc')).toBe('abc');
+    expect(decodeWin32InputMode(`${ESC}[A`)).toBe(`${ESC}[A`);
+    expect(decodeWin32InputMode(`${ESC}[200~text${ESC}[201~`)).toBe(
+      `${ESC}[200~text${ESC}[201~`,
+    );
+    // 項目数が足りないものは対象外とみなす。
+    expect(decodeWin32InputMode(`${ESC}[1;2_`)).toBe(`${ESC}[1;2_`);
+  });
+
+  it('日本語などBMP外も含めて文字を復元する', () => {
+    const a = 'あ'.codePointAt(0) ?? 0;
+    expect(decodeWin32InputMode(`${ESC}[0;0;${a};1;0;1_`)).toBe('あ');
+  });
+});
+
 describe('PC側入力の転送', () => {
   it('通常の文字はそのまま即座に書き込む', () => {
     const { writes, input } = createIo();
@@ -147,6 +196,13 @@ describe('PC側入力の転送', () => {
     const { writes, input } = createIo();
     input(`ab${ESC}[C`);
     expect(writes).toEqual([`ab${ESC}[C`]);
+  });
+
+  it('win32 input mode の矢印キーを1回の書き込みで渡す', () => {
+    const { writes, input } = createIo();
+    input(`${ESC}[0;0;27;1;0;1_${ESC}[0;0;91;1;0;1_${ESC}[0;0;65;1;0;1_`);
+    // 3打鍵ではなく、矢印キー1個として届かなければならない。
+    expect(writes).toEqual([`${ESC}[A`]);
   });
 
   it('restore で保留中の入力を取りこぼさない', () => {

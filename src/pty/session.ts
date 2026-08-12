@@ -3,6 +3,7 @@ import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { spawn, type IPty } from 'node-pty';
 import { IDLE_THRESHOLD_MS, type ProcessState } from '../shared/protocol.js';
+import { traceInput } from './input-trace.js';
 import { OutputRingBuffer, type Snapshot } from './ring-buffer.js';
 import { resolveCommand } from './resolve-command.js';
 
@@ -158,6 +159,7 @@ export class PtySession extends EventEmitter {
   /** PTYへ書き込む。到達順はこの呼び出し順で決まる。 */
   write(data: string): boolean {
     if (this.pty === null || this.exitInfo !== null || this.terminating) return false;
+    traceInput('PTY書込', data);
     try {
       this.pty.write(data);
       return true;
