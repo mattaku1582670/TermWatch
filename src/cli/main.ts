@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { HELP_TEXT, parseArgs } from './args.js';
 import { resolveWorkdir } from './workdir.js';
-import { buildBanner, buildNonTtyWarning } from './banner.js';
+import { buildBanner, buildExitNotice, buildNonTtyWarning } from './banner.js';
 import { initInputTrace } from '../pty/input-trace.js';
 import { LocalIo } from '../pty/local-io.js';
-import { PtySession } from '../pty/session.js';
+import { PtySession, type ExitInfo } from '../pty/session.js';
 import { SessionAuth } from '../security/tokens.js';
 import { TermWatchServer } from '../server/server.js';
 
@@ -182,12 +182,16 @@ export async function main(argv: readonly string[]): Promise<number> {
     session.dispose();
   };
 
+  // 子プロセスの終了内容。PC側へ表示するために保持する。
+  let childExit: ExitInfo | null = null;
+
   const exitCode = await new Promise<number>((resolvePromise) => {
     const finish = (code: number): void => {
       resolvePromise(code);
     };
 
     session.on('exit', (info) => {
+      childExit = info;
       // 終了コードをクライアントへ通知するための猶予を置く。
       // このタイマーは unref しない（猶予中にプロセスが終了しないようにするため）。
       server?.flushFinalStatus();
@@ -222,6 +226,15 @@ export async function main(argv: readonly string[]): Promise<number> {
   });
 
   await cleanup();
+
+  // 子プロセスの終了コードをPC側にも表示する。
+  // cleanup() で raw mode とカーソルを戻したあとに書く（TUIの残骸に紛れないように）。
+  // 強制終了（タスクマネージャーなど）では終了コードだけが手掛かりになるため、
+  // 正常終了かどうかにかかわらず必ず表示する。
+  if (childExit !== null) {
+    process.stdout.write(`${buildExitNotice(session.displayCommand, childExit)}\n`);
+  }
+
   return exitCode;
 }
 

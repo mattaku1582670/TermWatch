@@ -445,3 +445,59 @@ describe('出力配信と再接続', () => {
     client.close();
   });
 });
+
+describe('バッファ上限', () => {
+  it('破棄が起きた後の再接続で truncated を通知する', async () => {
+    // 既定の設定はバッファが大きく溢れないため、小さいバッファで作り直す。
+    session.kill();
+    await server.close();
+    session.dispose();
+
+    const smallBuffer = 5;
+    port = await freePort();
+    session = new PtySession({
+      command: process.execPath,
+      args: [CHILD],
+      cwd: process.cwd(),
+      cols: 80,
+      rows: 24,
+      bufferLines: smallBuffer,
+      recordPath: null,
+    });
+    auth = new SessionAuth();
+    server = new TermWatchServer({
+      port,
+      webRoot,
+      auth,
+      session,
+      controlMinutes: 10,
+      bufferLines: smallBuffer,
+      version: 'test',
+    });
+    expect((await server.listen()).ok).toBe(true);
+    expect(session.start()).toEqual({ ok: true });
+    await waitForText(session, 'READY');
+
+    const cookie = await pair();
+    const first = await connect(cookie);
+    first.ws.send(JSON.stringify({ type: 'resume', lastSeq: 0, controlHandle: null }));
+    const snapshot = await first.waitFor('snapshot');
+    const seq = snapshot.type === 'snapshot' ? snapshot.seq : 0;
+    first.close();
+    await sleep(200);
+
+    // 切断中に上限を大きく超える出力を発生させる。
+    for (let i = 0; i < 60; i += 1) session.write(`行${i}\r`);
+    await waitForText(session, 'ECHO:行59');
+    await sleep(300);
+
+    const second = await connect(cookie);
+    second.ws.send(JSON.stringify({ type: 'resume', lastSeq: seq, controlHandle: null }));
+    const resumed = await second.waitFor('snapshot');
+    // 欠落を隠さずクライアントへ伝えること。
+    expect(resumed.type === 'snapshot' && resumed.truncated).toBe(true);
+    // 直近の出力は残っていること。
+    expect(resumed.type === 'snapshot' && resumed.data).toContain('行59');
+    second.close();
+  });
+});

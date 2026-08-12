@@ -74,3 +74,19 @@ export function buildBanner(input: BannerInput): string {
   lines.push('----------------------------------------------------------------');
   return lines.join('\n');
 }
+
+/**
+ * 子プロセス終了時にPC側へ出す1行。
+ *
+ * 受け入れ基準では終了コードをPC側とスマートフォン側の両方へ表示する必要がある。
+ * 強制終了された場合はこの表示だけが手掛かりになるため、
+ * 正常終了（0）かどうかにかかわらず必ず出す。
+ */
+export function buildExitNotice(
+  displayCommand: string,
+  info: { readonly exitCode: number; readonly signal: number | null },
+): string {
+  const signalNote =
+    info.signal !== null && info.signal !== 0 ? `、シグナル ${info.signal}` : '';
+  return `TermWatch: ${displayCommand} が終了しました（終了コード ${info.exitCode}${signalNote}）`;
+}
