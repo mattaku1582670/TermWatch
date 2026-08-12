@@ -8,7 +8,8 @@ import type { ClientMessage, ServerMessage } from '../../src/shared/protocol';
  *   欠落なく復帰する。
  */
 
-export type ConnectionState = 'connecting' | 'open' | 'reconnecting' | 'unauthorized' | 'closed';
+export type { ConnectionState } from './connection-label';
+import type { ConnectionState } from './connection-label';
 
 export interface ConnectionHandlers {
   readonly onMessage: (message: ServerMessage) => void;

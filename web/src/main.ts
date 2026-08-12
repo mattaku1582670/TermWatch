@@ -2,6 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { Connection, type ConnectionState } from './connection';
+import { buildConnectionClass, buildConnectionLabel } from './connection-label';
 import type {
   ControlStatus,
   ServerMessage,
@@ -60,6 +61,13 @@ const confirmCancel = el<HTMLButtonElement>('confirm-cancel');
 let control: ControlStatus = { held: false, mine: false, expiresAt: null };
 let status: StatusPayload | null = null;
 let connectionState: ConnectionState = 'connecting';
+/**
+ * 再接続を試み始めた時刻。接続できている間は null。
+ *
+ * 再接続は無期限に続けるため、表示だけでは瞬断と長期切断を区別できない。
+ * 経過時間を併記して、待つべきか PC 側を見に行くべきかを判断できるようにする。
+ */
+let reconnectingSince: number | null = null;
 /** 現在のブラウザセッション内だけに保持する送信履歴。 */
 const sendHistory: string[] = [];
 
@@ -131,14 +139,6 @@ const PROCESS_LABELS: Record<string, string> = {
   exited: '終了',
 };
 
-const CONNECTION_LABELS: Record<ConnectionState, string> = {
-  connecting: '接続中…',
-  open: '接続済み',
-  reconnecting: '再接続中',
-  unauthorized: '認証切れ',
-  closed: 'PC未接続',
-};
-
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -159,8 +159,8 @@ function setNotice(text: string, level: 'info' | 'warn' | 'danger' = 'info'): vo
 }
 
 function renderHeader(): void {
-  connState.textContent = CONNECTION_LABELS[connectionState];
-  connState.className = connectionState === 'open' ? 'meta ok' : 'meta warn';
+  connState.textContent = buildConnectionLabel(connectionState, reconnectingSince, Date.now());
+  connState.className = buildConnectionClass(connectionState, reconnectingSince, Date.now());
 
   if (status === null) {
     procState.textContent = '-';
@@ -247,6 +247,12 @@ function writeOutput(data: string): void {
 const connection = new Connection({
   onStateChange: (state) => {
     connectionState = state;
+    // 再接続の最初の1回目で起点を決め、以降の試行では上書きしない。
+    if (state === 'reconnecting') {
+      reconnectingSince ??= Date.now();
+    } else {
+      reconnectingSince = null;
+    }
     if (state === 'unauthorized') {
       showPairing('接続が切れました。ペアリングコードを入力し直してください。');
     }
