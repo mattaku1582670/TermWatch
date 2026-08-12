@@ -1,4 +1,10 @@
 import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
+import {
+  PAIRING_ALPHABET,
+  PAIRING_CODE_LENGTH,
+  formatPairingCode,
+  normalizePairingCode,
+} from '../shared/pairing.js';
 
 /**
  * セッショントークンとワンタイムペアリングコードの生成・検証。
@@ -6,14 +12,19 @@ import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
  * ペアリングコードの設計（docs/DECISIONS.md D-004）:
  * - 文字集合: Crockford Base32 からさらに 0 と 1 を除いた30文字
  *   （I/L/O/U は Crockford の時点で除外済み。残る紛らわしい 0/O・1/I を排除）
- * - 長さ: 8文字（表示は 4-4 のハイフン区切り）
+ * - 長さ: 8文字（表示は 4-4 のハイフン区切り。入力時のハイフンは任意）
  * - エントロピー: log2(30^8) ≒ 39.2bit
  * - 有効期限: 起動後10分、または最初の認証成功時の早い方
  * - 総当たり対策: 認証失敗のレート制限（src/security/rate-limit.ts）
  */
 
-export const PAIRING_ALPHABET = '23456789ABCDEFGHJKMNPQRSTVWXYZ';
-export const PAIRING_CODE_LENGTH = 8;
+// 文字集合・正規化・整形は src/shared/pairing.ts に置く（Web側と共有するため）。
+export {
+  PAIRING_ALPHABET,
+  PAIRING_CODE_LENGTH,
+  formatPairingCode,
+  normalizePairingCode,
+} from '../shared/pairing.js';
 export const PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
 
 /** セッショントークンのバイト長（256bit）。 */
@@ -36,25 +47,6 @@ export function generatePairingCode(): string {
     code += PAIRING_ALPHABET[randomInt(PAIRING_ALPHABET.length)];
   }
   return code;
-}
-
-/** 表示用に 4-4 のハイフン区切りへ整形する。 */
-export function formatPairingCode(code: string): string {
-  const normalized = normalizePairingCode(code);
-  if (normalized.length !== PAIRING_CODE_LENGTH) return normalized;
-  return `${normalized.slice(0, 4)}-${normalized.slice(4)}`;
-}
-
-/**
- * 利用者入力を正規化する。小文字・ハイフン・空白・全角空白を吸収する。
- * 文字集合に含まれない文字は取り除く。
- */
-export function normalizePairingCode(input: string): string {
-  return input
-    .toUpperCase()
-    .split('')
-    .filter((ch) => PAIRING_ALPHABET.includes(ch))
-    .join('');
 }
 
 /**

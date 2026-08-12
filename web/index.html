@@ -18,6 +18,7 @@
         <h1 id="pairing-title">TermWatch</h1>
         <p class="pairing-lead">
           PC側ターミナルに表示されているペアリングコードを入力してください。
+          ハイフンは自動で入るので、8文字を続けて打てば大丈夫です。
         </p>
         <form id="pairing-form" autocomplete="off">
           <label class="visually-hidden" for="pairing-input">ペアリングコード</label>
@@ -29,7 +30,7 @@
             autocorrect="off"
             spellcheck="false"
             placeholder="XXXX-XXXX"
-            maxlength="16"
+            maxlength="9"
             required
           />
           <button type="submit" id="pairing-submit">接続</button>

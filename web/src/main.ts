@@ -3,6 +3,11 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { Connection, type ConnectionState } from './connection';
 import { buildConnectionClass, buildConnectionLabel } from './connection-label';
+import {
+  caretIndexAfter,
+  formatPairingInput,
+  normalizePairingCode,
+} from '../../src/shared/pairing';
 import type {
   ControlStatus,
   ServerMessage,
@@ -414,6 +419,7 @@ function showPairing(message: string): void {
   pairingError.hidden = message === '';
   pairingError.textContent = message;
   pairingInput.value = '';
+  lastPairingValue = '';
   pairingInput.focus();
 }
 
@@ -426,6 +432,37 @@ function showApp(): void {
   fitTerminal();
   connection.start();
 }
+
+/**
+ * ペアリングコード入力欄の整形。
+ *
+ * ハイフンは照合時に無視されるため入力不要だが、PC側の表示が `ABCD-EFGH` なので、
+ * 見比べながら打てるよう自動で挿入する。小文字と文字集合外の文字もここで吸収する。
+ *
+ * 区切りを消そうとしたときは、その手前の1文字も一緒に消す。
+ * そうしないと再挿入されて、消せないように見えてしまう。
+ */
+let lastPairingValue = '';
+pairingInput.addEventListener('input', (event) => {
+  const raw = pairingInput.value;
+  const caret = pairingInput.selectionStart ?? raw.length;
+  const inputType = (event as InputEvent).inputType ?? '';
+
+  let count = normalizePairingCode(raw.slice(0, caret)).length;
+  const removedSeparatorOnly =
+    inputType.startsWith('delete') && normalizePairingCode(raw) === normalizePairingCode(lastPairingValue);
+  const source = removedSeparatorOnly
+    ? normalizePairingCode(raw).slice(0, Math.max(0, count - 1)) +
+      normalizePairingCode(raw).slice(count)
+    : raw;
+  if (removedSeparatorOnly) count = Math.max(0, count - 1);
+
+  const formatted = formatPairingInput(source);
+  pairingInput.value = formatted;
+  lastPairingValue = formatted;
+  const position = caretIndexAfter(formatted, count);
+  pairingInput.setSelectionRange(position, position);
+});
 
 pairingForm.addEventListener('submit', (event) => {
   event.preventDefault();
