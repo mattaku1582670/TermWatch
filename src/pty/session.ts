@@ -159,7 +159,7 @@ export class PtySession extends EventEmitter {
   /** PTYへ書き込む。到達順はこの呼び出し順で決まる。 */
   write(data: string): boolean {
     if (this.pty === null || this.exitInfo !== null || this.terminating) return false;
-    traceInput('PTY書込', data);
+    traceInput('PTY書込(PC/スマホ両方)', data);
     try {
       this.pty.write(data);
       return true;

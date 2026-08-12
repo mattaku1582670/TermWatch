@@ -73,6 +73,8 @@ let connectionState: ConnectionState = 'connecting';
  * 経過時間を併記して、待つべきか PC 側を見に行くべきかを判断できるようにする。
  */
 let reconnectingSince: number | null = null;
+/** 一度でも接続できたか。初回接続と再接続を区別する。 */
+let hasConnected = false;
 /** 現在のブラウザセッション内だけに保持する送信履歴。 */
 const sendHistory: string[] = [];
 
@@ -252,11 +254,14 @@ function writeOutput(data: string): void {
 const connection = new Connection({
   onStateChange: (state) => {
     connectionState = state;
-    // 再接続の最初の1回目で起点を決め、以降の試行では上書きしない。
-    if (state === 'reconnecting') {
-      reconnectingSince ??= Date.now();
-    } else {
+    // 一度でも接続できた後の切断サイクルなら、経過時間を数え続ける。
+    // 画面復帰による即時再試行は backoff を初期化して 'connecting' を通すため、
+    // 状態名だけで判定すると経過時間がリセットされてしまう（D-027）。
+    if (state === 'open' || state === 'unauthorized' || state === 'closed') {
       reconnectingSince = null;
+      if (state === 'open') hasConnected = true;
+    } else if (hasConnected) {
+      reconnectingSince ??= Date.now();
     }
     if (state === 'unauthorized') {
       showPairing('接続が切れました。ペアリングコードを入力し直してください。');
@@ -444,24 +449,44 @@ function showApp(): void {
  */
 let lastPairingValue = '';
 pairingInput.addEventListener('input', (event) => {
+  const inputEvent = event as InputEvent;
+  // IME変換中は書き換えない。未確定文字列が消えたり変換が中断されたりする。
+  if (inputEvent.isComposing) return;
+
   const raw = pairingInput.value;
   const caret = pairingInput.selectionStart ?? raw.length;
-  const inputType = (event as InputEvent).inputType ?? '';
+  const inputType = inputEvent.inputType ?? '';
 
+  // カーソルより前にあるコード文字の数。整形で文字数が変わるため、
+  // 位置ではなく個数で数え直す。
   let count = normalizePairingCode(raw.slice(0, caret)).length;
-  const removedSeparatorOnly =
-    inputType.startsWith('delete') && normalizePairingCode(raw) === normalizePairingCode(lastPairingValue);
-  const source = removedSeparatorOnly
-    ? normalizePairingCode(raw).slice(0, Math.max(0, count - 1)) +
-      normalizePairingCode(raw).slice(count)
-    : raw;
-  if (removedSeparatorOnly) count = Math.max(0, count - 1);
+  let source = raw;
+
+  // 区切りだけが消えた場合は、利用者が消したかった文字を代わりに消す。
+  // そうしないと即座に再挿入され、消せないように見える。
+  const codeChars = normalizePairingCode(raw);
+  if (normalizePairingCode(lastPairingValue) === codeChars) {
+    if (inputType === 'deleteContentBackward' && count > 0) {
+      source = codeChars.slice(0, count - 1) + codeChars.slice(count);
+      count -= 1;
+    } else if (inputType === 'deleteContentForward' && count < codeChars.length) {
+      source = codeChars.slice(0, count) + codeChars.slice(count + 1);
+    }
+  }
 
   const formatted = formatPairingInput(source);
   pairingInput.value = formatted;
   lastPairingValue = formatted;
   const position = caretIndexAfter(formatted, count);
   pairingInput.setSelectionRange(position, position);
+});
+
+// 変換確定時にまとめて整形する。変換中は上で何もしていないため、ここで揃える。
+pairingInput.addEventListener('compositionend', () => {
+  const formatted = formatPairingInput(pairingInput.value);
+  pairingInput.value = formatted;
+  lastPairingValue = formatted;
+  pairingInput.setSelectionRange(formatted.length, formatted.length);
 });
 
 pairingForm.addEventListener('submit', (event) => {
@@ -514,7 +539,9 @@ function syncViewportHeight(): void {
 
   // キーボード表示時、iOS はビジュアルビューポートを縮めたうえで上へずらす。
   // ずれた分だけアプリ本体を下げて、見えている領域にぴったり重ねる。
-  const offset = (viewport?.offsetTop ?? 0) + (viewport?.pageTop ?? 0) - window.scrollY;
+  // offsetTop と (pageTop - scrollY) はどちらもレイアウトビューポートからの
+  // ずれを表すため、足すと約2倍ずれる。offsetTop だけを使う（D-026）。
+  const offset = viewport?.offsetTop ?? 0;
   root.style.setProperty('--app-offset', `${Math.round(Math.max(0, offset))}px`);
 
   // キーボードが出ているかを高さの差から推定し、下端の余白を切り替える。

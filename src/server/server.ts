@@ -50,6 +50,8 @@ const SUBMIT_SETTLE_MS = 80;
 const DATA_EVENT = 'data';
 /** 再描画が観測できない場合に、確定のEnterを送るまでの上限時間。 */
 const SUBMIT_FALLBACK_MS = 600;
+/** 確定待ちで滞留させる送信の上限。 */
+const MAX_PENDING_SUBMITS = 32;
 
 export interface ServerOptions {
   readonly port: number;
@@ -90,6 +92,11 @@ export class TermWatchServer {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   /** 送信確定Enterの遅延タイマー。終了時に破棄する。 */
   private readonly submitTimers = new Set<NodeJS.Timeout>();
+  /** 確定待ちで購読中の出力リスナー。終了時に確実に外す。 */
+  private readonly submitListeners = new Set<() => void>();
+  /** 「本文→確定Enter」を直列化するためのキュー。 */
+  private readonly submitQueue: { client: ClientState; text: string; submit: boolean }[] = [];
+  private submitting = false;
   private closePromise: Promise<void> | null = null;
 
   /** リモート操作モードの有無が変化したときに呼ばれる。 */
@@ -581,17 +588,46 @@ export class TermWatchServer {
    * 受け手のTUIはPTYをチャンク単位で読むため、同じ読み取りに入ったCRを
    * 貼り付け処理の一部として吸収してしまい、確定されない
    * （Codex CLI で実測。docs/DECISIONS.md D-007）。
-   * そのため貼り付けを送ってから少し遅らせて、別の書き込みでEnterを送る。
+   * そのため貼り付けを送ってから、TUIの再描画を待って別の書き込みでEnterを送る。
    *
-   * 単一行（bracketed paste を使わない場合）は従来どおり同時に送る。
+   * 本文と確定Enterの間に別の送信が割り込むと、PTYには本文が続けて入ったあとで
+   * CRが2つ届き、指示が結合されてしまう。そのためセッション単位のキューで
+   * 「本文 → 確定Enter」を直列化する（D-025）。
    */
   private sendTextInput(client: ClientState, text: string, submit: boolean): void {
-    const body = encodeTextInput(text);
-    this.writeToPty(client, body);
-    if (!submit) return;
+    if (this.submitQueue.length >= MAX_PENDING_SUBMITS) {
+      this.sendError(client, 'rate-limited', '送信が集中しています。少し待ってからお試しください。');
+      return;
+    }
+    this.submitQueue.push({ client, text, submit });
+    this.drainSubmitQueue();
+  }
 
-    // 本文と同じ書き込みにEnterを含めると、受け手のTUIが本文の一部として
-    // 吸収してしまい確定されない（実測。D-007）。
+  /** キューの先頭を1件だけ処理する。前の送信が確定するまで次へ進まない。 */
+  private drainSubmitQueue(): void {
+    if (this.submitting) return;
+    const item = this.submitQueue.shift();
+    if (item === undefined) return;
+
+    const { client, text, submit } = item;
+    this.submitting = true;
+
+    const finish = (): void => {
+      this.submitting = false;
+      // 同期的に再入すると深い再帰になるため、次のティックで続きを処理する。
+      const next = setImmediate(() => {
+        this.submitTimers.delete(next as unknown as NodeJS.Timeout);
+        this.drainSubmitQueue();
+      });
+      this.submitTimers.add(next as unknown as NodeJS.Timeout);
+    };
+
+    this.writeToPty(client, encodeTextInput(text));
+    if (!submit) {
+      finish();
+      return;
+    }
+
     // 固定時間だけ待つ方式は相手の描画速度に左右されて不安定だったため、
     // 「本文を書いたあと、TUIが再描画した（＝入力を処理し終えた）ことを
     // 出力の到着で検知してから」Enterを送る。出力が来ない場合に備えて上限時間も置く。
@@ -602,6 +638,7 @@ export class TermWatchServer {
       if (fired) return;
       fired = true;
       this.options.session.off(DATA_EVENT, onData);
+      this.submitListeners.delete(onData);
       if (settleTimer !== null) {
         clearTimeout(settleTimer);
         this.submitTimers.delete(settleTimer);
@@ -610,9 +647,13 @@ export class TermWatchServer {
       this.submitTimers.delete(fallbackTimer);
 
       // 待っている間に操作権を失った場合は送らない。
-      if (!this.control.isHolder(client.controlHandle)) return;
-      if (client.ws.readyState !== client.ws.OPEN) return;
-      this.writeToPty(client, CARRIAGE_RETURN);
+      if (
+        this.control.isHolder(client.controlHandle) &&
+        client.ws.readyState === client.ws.OPEN
+      ) {
+        this.writeToPty(client, CARRIAGE_RETURN);
+      }
+      finish();
     };
 
     const onData = (): void => {
@@ -627,13 +668,13 @@ export class TermWatchServer {
     };
 
     this.options.session.on(DATA_EVENT, onData);
+    this.submitListeners.add(onData);
 
     const fallbackTimer = setTimeout(fire, SUBMIT_FALLBACK_MS);
     fallbackTimer.unref();
     this.submitTimers.add(fallbackTimer);
   }
 
-  
   private writeToPty(client: ClientState, data: string): void {
     if (data.length === 0) return;
     if (!this.options.session.write(data)) {
@@ -803,6 +844,12 @@ export class TermWatchServer {
 
     for (const timer of this.submitTimers) clearTimeout(timer);
     this.submitTimers.clear();
+    for (const listener of this.submitListeners) {
+      this.options.session.off(DATA_EVENT, listener);
+    }
+    this.submitListeners.clear();
+    this.submitQueue.length = 0;
+    this.submitting = false;
 
     this.control.dispose();
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LocalIo } from '../../src/pty/local-io.js';
+import { LocalIo, nextVtState } from '../../src/pty/local-io.js';
 import type { PtySession } from '../../src/pty/session.js';
 
 /**
@@ -158,5 +158,42 @@ describe('ウィンドウタイトル表示', () => {
     io.setRemoteControlIndicator(true);
     io.refreshTitle();
     expect(written).toEqual([]);
+  });
+});
+
+describe('nextVtState', () => {
+  const E = String.fromCharCode(0x1b);
+  const BELL = String.fromCharCode(0x07);
+  const ST = E + String.fromCharCode(0x5c);
+
+  it('通常の文字では ground のまま', () => {
+    expect(nextVtState('hello', 'ground')).toBe('ground');
+  });
+
+  it('完結したシーケンスの後は ground に戻る', () => {
+    expect(nextVtState(`${E}[2J`, 'ground')).toBe('ground');
+    expect(nextVtState(`${E}[?2004h`, 'ground')).toBe('ground');
+    expect(nextVtState(`${E}OP`, 'ground')).toBe('ground');
+    expect(nextVtState(`${E}]0;title${BELL}`, 'ground')).toBe('ground');
+    expect(nextVtState(`${E}]0;title${ST}`, 'ground')).toBe('ground');
+  });
+
+  it('未完のシーケンスの途中を検出する', () => {
+    // ここでタイトルを書くと断片が表示されてしまう。
+    expect(nextVtState(`${E}[`, 'ground')).toBe('csi');
+    expect(nextVtState(`${E}[?2004`, 'ground')).toBe('csi');
+    expect(nextVtState(E, 'ground')).toBe('escape');
+    expect(nextVtState(`${E}]0;tit`, 'ground')).toBe('osc');
+  });
+
+  it('チャンクを跨いで状態を持ち越す', () => {
+    // 子プロセスの出力は境界で分割される。1回目で途中、2回目で完結。
+    const first = nextVtState(`${E}[?2004`, 'ground');
+    expect(first).toBe('csi');
+    expect(nextVtState('h', first)).toBe('ground');
+  });
+
+  it('OSC 内の ESC が本文でも状態を失わない', () => {
+    expect(nextVtState(`${E}]0;a${E}b`, 'ground')).toBe('osc');
   });
 });

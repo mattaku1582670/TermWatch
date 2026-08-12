@@ -69,6 +69,8 @@ export function isIncompleteEscapeSequence(text: string): boolean {
 const WIN32_INPUT_RECORD = new RegExp(`${ESCAPE}\\[([0-9;]*)_`, 'g');
 /** 繰り返し回数の上限。壊れた入力で大量生成しないための保険。 */
 const MAX_REPEAT = 1024;
+/** レコードの項目数の上限。これを超えるものは別物として扱う。 */
+const WIN32_FIELD_COUNT = 6;
 
 /**
  * PC側ターミナルが win32 input mode で送ってきた入力を、生のバイト列へ戻す。
@@ -82,8 +84,13 @@ const MAX_REPEAT = 1024;
  * 「Escキー」＋文字 `[` ＋文字 `A` として届く（画面には `[A` と出る）。
  * 文字コードへ復号して1本のバイト列に戻せば、ConPTY が本来のキーへ変換する。
  *
- * - 離すイベント（Kd=0）は捨てる。押下と両方を採用すると二重入力になる。
- * - 文字を伴わないキー（Uc=0、Shift 単独など）は捨てる。
+ * 畳むのは **仮想キーコードもスキャンコードも持たない**（Vk=0 かつ Sc=0）
+ * 文字レコードだけに限る。Ctrl+Space やファンクションキーのように
+ * Vk / Sc / 修飾キーに意味があるレコードは ConPTY 自身が解釈できるため、
+ * 手を触れずそのまま渡す。文字コードへ縮退させると、これらが失われる（D-023）。
+ *
+ * 項目は末尾から省略できる（`ESC[65;30;97;1_` も正規のレコード）。
+ * 省略分は Kd=0 / Cs=0 / Rc=1 の既定値として扱う。
  */
 export function decodeWin32InputMode(text: string): string {
   // 終端文字 `_` を含まなければ、このモードのレコードは存在しない。
@@ -91,21 +98,77 @@ export function decodeWin32InputMode(text: string): string {
 
   return text.replace(WIN32_INPUT_RECORD, (match: string, params: string): string => {
     const fields = params.split(';');
-    // 6項目そろっていないものは win32 input mode ではないとみなし、手を触れない。
-    if (fields.length < 6) return match;
+    // 項目が多すぎるものは win32 input mode のレコードではない。手を触れない。
+    if (fields.length > WIN32_FIELD_COUNT) return match;
 
-    const num = (index: number): number => {
-      const value = Number.parseInt(fields[index] ?? '', 10);
-      return Number.isFinite(value) ? value : 0;
+    const num = (index: number, fallback: number): number => {
+      const raw = fields[index];
+      if (raw === undefined || raw === '') return fallback;
+      const value = Number.parseInt(raw, 10);
+      return Number.isFinite(value) ? value : fallback;
     };
 
-    if (num(3) === 0) return ''; // 離すイベント
-    const unicode = num(2);
-    if (unicode <= 0 || unicode > 0x10ffff) return ''; // 文字を伴わないキー
+    // 仮想キーコード／スキャンコードを持つレコードは ConPTY へそのまま渡す。
+    if (num(0, 0) !== 0 || num(1, 0) !== 0) return match;
 
-    const repeat = Math.min(Math.max(num(5), 1), MAX_REPEAT);
+    if (num(3, 0) === 0) return ''; // 離すイベント
+    const unicode = num(2, 0);
+    if (unicode <= 0 || unicode > 0x10ffff) return ''; // 文字を伴わないレコード
+
+    const repeat = Math.min(Math.max(num(5, 1), 1), MAX_REPEAT);
     return String.fromCodePoint(unicode).repeat(repeat);
   });
+}
+
+/**
+ * PTY出力のエスケープシーケンス解析状態。
+ *
+ * `ground` は「シーケンスの途中ではない」状態で、ここでのみ
+ * 別の書き込み（ウィンドウタイトル）を挟んでよい。
+ */
+export type VtState = 'ground' | 'escape' | 'csi' | 'ss3' | 'osc' | 'oscEscape';
+
+/**
+ * 出力チャンクを読み進めた後の解析状態を返す。
+ *
+ * 子プロセスの出力はチャンク境界で分割されるため、状態をチャンクを跨いで
+ * 持ち越す必要がある。経過時間だけで判断すると、`ESC[` を出したまま
+ * 子プロセスが待機した場合に未完のシーケンスへ割り込んでしまう（D-024）。
+ */
+export function nextVtState(chunk: string, state: VtState): VtState {
+  let current = state;
+  for (let i = 0; i < chunk.length; i += 1) {
+    const ch = chunk[i] as string;
+    const code = chunk.charCodeAt(i);
+
+    switch (current) {
+      case 'ground':
+        if (ch === ESCAPE) current = 'escape';
+        break;
+      case 'escape':
+        if (ch === String.fromCharCode(0x5b)) current = 'csi';
+        else if (ch === String.fromCharCode(0x5d)) current = 'osc';
+        else if (ch === 'O') current = 'ss3';
+        else current = 'ground'; // ESC + 1文字で完結
+        break;
+      case 'csi':
+        // 0x40-0x7E が終端文字。
+        if (code >= 0x40 && code <= 0x7e) current = 'ground';
+        break;
+      case 'ss3':
+        current = 'ground';
+        break;
+      case 'osc':
+        if (ch === BELL) current = 'ground';
+        else if (ch === ESCAPE) current = 'oscEscape';
+        break;
+      case 'oscEscape':
+        // ESC \ (ST) で終端。それ以外は OSC 本文の続きとみなす。
+        current = ch === String.fromCharCode(0x5c) ? 'ground' : 'osc';
+        break;
+    }
+  }
+  return current;
 }
 
 export class LocalIo {
@@ -130,6 +193,8 @@ export class LocalIo {
   private pendingInput = '';
   /** エスケープシーケンスの続きを待つタイマー。 */
   private escapeTimer: NodeJS.Timeout | null = null;
+  /** PTY出力の解析状態。ground 以外のときタイトルを書くと表示が壊れる。 */
+  private outputState: VtState = 'ground';
 
   constructor(
     private readonly session: PtySession,
@@ -171,6 +236,7 @@ export class LocalIo {
       // 出力中はタイトルを書き込まない。エスケープシーケンスの途中に
       // 割り込むと、断片が文字として表示されてしまう。
       this.lastOutputAt = Date.now();
+      this.outputState = nextVtState(data, this.outputState);
       stdout.write(data);
     });
 
@@ -257,8 +323,8 @@ export class LocalIo {
 
     if (title === this.lastTitle) return;
 
-    if (Date.now() - this.lastOutputAt < LocalIo.TITLE_QUIET_MS) {
-      // 出力中。保留して次の機会に書く。
+    if (!this.canWriteTitle()) {
+      // シーケンスの途中、または出力中。保留して次の機会に書く。
       this.titlePending = true;
       return;
     }
@@ -278,9 +344,23 @@ export class LocalIo {
     const hasIndicator = this.pairingCode !== null || this.remoteControlActive;
     // 表示するものが無く、保留中の変更も無ければ何も書かない。
     if (!hasIndicator && !this.titlePending) return;
-    if (Date.now() - this.lastOutputAt < LocalIo.TITLE_QUIET_MS) return;
+    if (!this.canWriteTitle()) return;
     this.lastTitle = null;
     this.writeTitle();
+  }
+
+  /**
+   * いまタイトルを書き込んでよいか。
+   *
+   * 条件は2つ。
+   * - PTY出力がエスケープシーケンスの途中でないこと（必須）。
+   *   途中へ OSC を挟むと端末が誤って解釈し、断片が文字として表示される。
+   * - 直前まで出力が続いていないこと（補助）。
+   *   解析状態だけでは拾えない、描画のまとまりの途中を避ける。
+   */
+  private canWriteTitle(): boolean {
+    if (this.outputState !== 'ground') return false;
+    return Date.now() - this.lastOutputAt >= LocalIo.TITLE_QUIET_MS;
   }
 
   /** raw modeとカーソル状態を復元する。多重呼び出し安全。 */

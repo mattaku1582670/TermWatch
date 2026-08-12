@@ -1,4 +1,4 @@
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, closeSync, openSync, writeSync } from 'node:fs';
 
 /**
  * 入力経路の診断記録（既定では無効）。
@@ -6,8 +6,10 @@ import { appendFileSync } from 'node:fs';
  * 環境変数 TERMWATCH_DEBUG_INPUT にファイルパスを指定したときだけ有効になる。
  * 不具合の再現待ちのための一時的な計測であり、通常運用では動作しない。
  *
- * 記録するのはキー入力のバイト列そのものなので、
- * 有効化中はPC側で入力した内容がファイルへ残る点に注意（起動時に警告を表示する）。
+ * 記録範囲は PTY へ渡る入力すべて。PC側のキー入力に加えて、
+ * スマートフォンから送られた本文も平文で残る。子プロセスへ打ち込んだ
+ * API キーやパスワードも対象になるため、有効化は調査中のみに限る
+ * （起動時に警告を表示する）。
  */
 
 const ENV_KEY = 'TERMWATCH_DEBUG_INPUT';
@@ -29,7 +31,14 @@ export function initInputTrace(env: NodeJS.ProcessEnv = process.env): string | n
   target = value.trim();
   started = Date.now();
   try {
-    appendFileSync(target, `--- TermWatch 入力診断 開始 ${new Date().toISOString()} ---\n`, 'utf8');
+    // 記録には子プロセスへ打ち込んだ資格情報が混ざり得る。
+    // 新規作成時の権限を所有者のみに絞る（既存ファイルの権限は変えない）。
+    const handle = openSync(target, 'a', 0o600);
+    try {
+      writeSync(handle, `--- TermWatch 入力診断 開始 ${new Date().toISOString()} ---\n`);
+    } finally {
+      closeSync(handle);
+    }
   } catch {
     target = null;
   }

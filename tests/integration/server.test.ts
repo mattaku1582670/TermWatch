@@ -446,6 +446,26 @@ describe('出力配信と再接続', () => {
   });
 });
 
+describe('連続送信', () => {
+  it('立て続けに送っても指示が結合しない', async () => {
+    const cookie = await pair();
+    const client = await connect(cookie);
+    client.ws.send(JSON.stringify({ type: 'resume', lastSeq: 0, controlHandle: null }));
+    await client.waitFor('snapshot');
+    client.ws.send(JSON.stringify({ type: 'control.request' }));
+    await client.waitFor('control');
+
+    // 確定Enterを待たずに次を送る。直列化していないと PTY へ
+    // 「AB」＋CR2個の順で届き、2件目が空送信になる。
+    client.ws.send(JSON.stringify({ type: 'input.text', text: '一件目', submit: true }));
+    client.ws.send(JSON.stringify({ type: 'input.text', text: '二件目', submit: true }));
+
+    await waitForText(session, 'ECHO:一件目');
+    await waitForText(session, 'ECHO:二件目');
+    client.close();
+  });
+});
+
 describe('バッファ上限', () => {
   it('破棄が起きた後の再接続で truncated を通知する', async () => {
     // 既定の設定はバッファが大きく溢れないため、小さいバッファで作り直す。

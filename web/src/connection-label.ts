@@ -40,13 +40,23 @@ function formatDuration(ms: number): string {
   return `${minutes}分${String(seconds).padStart(2, '0')}秒`;
 }
 
+/**
+ * 再接続を試みている最中か。
+ *
+ * 画面復帰による即時再試行は backoff を初期化するため `connecting` を通る。
+ * 状態名だけで区別すると経過時間の表示が途切れる。
+ */
+function isRetrying(state: ConnectionState): boolean {
+  return state === 'reconnecting' || state === 'connecting';
+}
+
 export function buildConnectionLabel(
   state: ConnectionState,
   reconnectingSince: number | null,
   now: number,
 ): string {
   const label = CONNECTION_LABELS[state] ?? state;
-  if (state !== 'reconnecting' || reconnectingSince === null) return label;
+  if (!isRetrying(state) || reconnectingSince === null) return label;
   return `${label}（${formatDuration(now - reconnectingSince)}）`;
 }
 
@@ -57,7 +67,7 @@ export function buildConnectionClass(
 ): string {
   if (state === 'open') return 'meta ok';
   if (
-    state === 'reconnecting' &&
+    isRetrying(state) &&
     reconnectingSince !== null &&
     now - reconnectingSince >= RECONNECT_WARN_MS
   ) {

@@ -13,9 +13,15 @@ import {
 describe('buildConnectionLabel', () => {
   const t0 = 1_000_000;
 
-  it('接続中は経過時間を出さない', () => {
+  it('初回接続では経過時間を出さない', () => {
     expect(buildConnectionLabel('open', null, t0)).toBe('接続済み');
     expect(buildConnectionLabel('connecting', null, t0)).toBe('接続中…');
+  });
+
+  it('画面復帰による即時再試行でも経過時間を保つ', () => {
+    // reconnectNow() は backoff を初期化するため 'connecting' を通る。
+    expect(buildConnectionLabel('connecting', t0, t0 + 45_000)).toBe('接続中…（45秒）');
+    expect(buildConnectionClass('connecting', t0, t0 + 45_000)).toBe('meta danger');
   });
 
   it('再接続中は経過時間を併記する', () => {

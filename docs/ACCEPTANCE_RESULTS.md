@@ -5,8 +5,8 @@
 
 - 初回記録: 2026-08-10 ／ 最終更新: 2026-08-12
 - 確認環境: Windows 11 Enterprise 10.0.26200 / Node.js v24.14.0 / x64 / iPhone Safari / VS Code Private Port Forwarding
-- 実施した自動検証: `npm ci`、`npm run lint`、`npm run typecheck`、`npm test`（155 件）、`npm run build`、`npm run package:win`
-- 外部コードレビュー（Codex）を実施し、指摘のうちバグ・セキュリティ該当分を修正済み（`docs/DECISIONS.md` D-015）
+- 実施した自動検証: `npm ci`、`npm run lint`、`npm run typecheck`、`npm test`（176 件）、`npm run build`、`npm run package:win`
+- 外部コードレビュー（Codex）を2回実施。1回目は `docs/DECISIONS.md` D-015、2回目（D-016〜D-022 が対象）は D-023〜D-028。いずれも指摘を反映済み
 - 実施済みの手動確認: MT-01、MT-02、MT-04、MT-05、MT-07、MT-09、MT-10、MT-13、MT-15（一部）、MT-17
 - **未実施**: MT-14（Node.js 未導入 PC、優先度低）、MT-15 のうち別アカウント・dev tunnels 遮断（該当環境が無いため実施できない）
 

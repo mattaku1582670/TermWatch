@@ -130,17 +130,45 @@ describe('decodeWin32InputMode', () => {
     expect(decodeWin32InputMode(LEFT)).toBe(`${ESC}[D`);
   });
 
-  it('離すイベントを捨て、Ctrl+Cを1回だけにする', () => {
-    expect(decodeWin32InputMode(CTRL_C)).toBe(String.fromCharCode(3));
+  it('Ctrl+C は Vk を持つのでそのまま渡す', () => {
+    // MT-10 で動作確認済みの経路。ConPTY が押下と離すを正しく扱う。
+    expect(decodeWin32InputMode(CTRL_C)).toBe(CTRL_C);
   });
 
-  it('文字を伴わないキー（Uc=0）は捨てる', () => {
-    // Shift 単独の押下。
-    expect(decodeWin32InputMode(`${ESC}[16;42;0;1;16;1_`)).toBe('');
+  it('Vk=0 かつ Sc=0 の離すイベントは捨てる', () => {
+    // 文字レコードは押下だけを採用する。両方採ると二重入力になる。
+    expect(decodeWin32InputMode(`${ESC}[0;0;65;0;0;1_`)).toBe('');
   });
 
   it('繰り返し回数のぶんだけ複製する', () => {
-    expect(decodeWin32InputMode(`${ESC}[65;30;97;1;0;3_`)).toBe('aaa');
+    expect(decodeWin32InputMode(`${ESC}[0;0;97;1;0;3_`)).toBe('aaa');
+  });
+
+  it('仮想キーコードを持つレコードは ConPTY へそのまま渡す', () => {
+    // ConPTY は win32 input mode のレコードを自分で解釈できる。
+    // 文字コードへ畳むと Ctrl+Space やファンクションキーが失われる（D-023）。
+    expect(decodeWin32InputMode(`${ESC}[65;30;97;1_`)).toBe(`${ESC}[65;30;97;1_`);
+    // Ctrl+Space は Uc=0 だが Vk/修飾キーに意味がある。捨ててはならない。
+    expect(decodeWin32InputMode(`${ESC}[32;57;0;1;8;1_`)).toBe(`${ESC}[32;57;0;1;8;1_`);
+  });
+
+  it('項目を省略したレコードも復号する', () => {
+    // 末尾の項目は省略でき、Kd=0 / Cs=0 / Rc=1 が既定値。
+    expect(decodeWin32InputMode(`${ESC}[0;0;65;1_`)).toBe('A');
+    expect(decodeWin32InputMode(`${ESC}[0;0;65;1;0_`)).toBe('A');
+    expect(decodeWin32InputMode(`${ESC}[;;65;1;;_`)).toBe('A');
+    // Kd を省略すると離すイベント扱い。
+    expect(decodeWin32InputMode(`${ESC}[0;0;65_`)).toBe('');
+  });
+
+  it('貼り付け本文に紛れたレコード形式を書き換えない', () => {
+    // PC 側で任意のテキストを貼り付けたとき、本文が壊れてはならない。
+    const pasted = `${ESC}[200~x${ESC}[1;2;65;1;0;2_y${ESC}[201~`;
+    expect(decodeWin32InputMode(pasted)).toBe(pasted);
+  });
+
+  it('項目が多すぎるものは別物として扱う', () => {
+    expect(decodeWin32InputMode(`${ESC}[0;0;65;1;0;1;9_`)).toBe(`${ESC}[0;0;65;1;0;1;9_`);
   });
 
   it('win32 input mode ではない入力には手を触れない', () => {
