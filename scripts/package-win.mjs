@@ -1,4 +1,12 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -55,14 +63,41 @@ mkdirSync(join(outDir, 'runtime'), { recursive: true });
 cpSync(process.execPath, join(outDir, 'runtime', 'node.exe'));
 
 // --- 実行時依存 ---
-const runtimeDeps = ['node-pty', 'ws', 'node-addon-api'];
-for (const dep of runtimeDeps) {
-  const source = join(root, 'node_modules', dep);
-  if (!existsSync(source)) {
-    fail(`依存関係が見つかりません: ${dep}（npm ci を実行してください）`);
+// package.json の dependencies から推移的にたどる。
+// 以前は同梱するモジュールを手書きで列挙していたため、依存を1つ増やしたときに
+// 追記を忘れ、梱包は成功するのに実行時に ERR_MODULE_NOT_FOUND で落ちた。
+// 列挙をやめ、必要なものが自動で入るようにする。
+function collectRuntimeDeps(startNames) {
+  const found = new Set();
+  const queue = [...startNames];
+  while (queue.length > 0) {
+    const name = queue.shift();
+    if (found.has(name)) continue;
+    const dir = join(root, 'node_modules', name);
+    if (!existsSync(dir)) {
+      fail(`依存関係が見つかりません: ${name}（npm ci を実行してください）`);
+    }
+    found.add(name);
+    const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+    queue.push(...Object.keys(manifest.dependencies ?? {}));
   }
-  cpSync(source, join(outDir, 'node_modules', dep), { recursive: true });
+  return [...found].sort();
 }
+
+const declaredDeps = Object.keys(
+  JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).dependencies ?? {},
+);
+if (declaredDeps.length === 0) {
+  fail('package.json に dependencies がありません。');
+}
+const runtimeDeps = collectRuntimeDeps(declaredDeps);
+
+for (const dep of runtimeDeps) {
+  cpSync(join(root, 'node_modules', dep), join(outDir, 'node_modules', dep), {
+    recursive: true,
+  });
+}
+console.log(`[package:win] 実行時依存 ${runtimeDeps.length} 件を同梱しました。`);
 
 // 不要なプリビルド（他プラットフォーム向け）を削除してサイズを抑える。
 const prebuilds = join(outDir, 'node_modules', 'node-pty', 'prebuilds');
@@ -142,10 +177,17 @@ writeFileSync(
     'このフォルダーには、TermWatch ポータブル版へ同梱したソフトウェアのライセンスが含まれます。',
     '',
     `- Node.js ランタイム (runtime/node.exe, ${process.version}): https://github.com/nodejs/node/blob/main/LICENSE`,
-    '- node-pty (MIT): https://github.com/microsoft/node-pty',
-    '- ws (MIT): https://github.com/websockets/ws',
-    '- node-addon-api (MIT): https://github.com/nodejs/node-addon-api',
     '- @xterm/xterm (MIT, web/assets へバンドル済み): https://github.com/xtermjs/xterm.js',
+    '',
+    '同梱した Node.js パッケージ（推移的依存を含む）:',
+    // 手書きの一覧は依存を増やしたときに古くなる。実際に同梱したものから作る。
+    ...runtimeDeps.map((dep) => {
+      const manifest = JSON.parse(
+        readFileSync(join(root, 'node_modules', dep, 'package.json'), 'utf8'),
+      );
+      const license = manifest.license ?? 'ライセンス表記なし';
+      return `- ${dep} (${license})`;
+    }),
     '',
     'Node.js のライセンス全文は https://github.com/nodejs/node の LICENSE を参照してください。',
     '',
@@ -158,6 +200,55 @@ for (const name of ['README.md', 'SECURITY.md']) {
   const source = join(root, name);
   if (existsSync(source)) cpSync(source, join(outDir, name));
 }
+
+// --- 同梱漏れの検査 ---
+// アプリが import しているパッケージが、すべて同梱されているかを確かめる。
+//
+// ここで「同梱版を実際に起動してみる」方式は使えない。出力先がリポジトリ配下にあるため、
+// Node はモジュールを見つけられないと親ディレクトリへ遡り、開発機の node_modules から
+// 解決してしまう。手元では成功し、配置先（C:\tools\TermWatch など）でだけ
+// ERR_MODULE_NOT_FOUND で落ちる。実際にこの見逃しが起きた。
+// そのため、実行ではなく同梱物そのものを静的に検査する。
+function collectJsFiles(dir) {
+  const files = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...collectJsFiles(full));
+    else if (entry.name.endsWith('.js')) files.push(full);
+  }
+  return files;
+}
+
+/** import 元がパッケージ名（相対でも node: でもない）のものを取り出す。 */
+function bareSpecifiers(source) {
+  const names = new Set();
+  const pattern = /(?:from|import)\s*['"]([^'"]+)['"]/g;
+  let match;
+  while ((match = pattern.exec(source)) !== null) {
+    const specifier = match[1];
+    if (specifier.startsWith('.') || specifier.startsWith('node:')) continue;
+    // スコープ付き（@scope/name）は2階層までを名前とする。
+    const parts = specifier.split('/');
+    names.add(specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]);
+  }
+  return names;
+}
+
+const required = new Set();
+for (const file of collectJsFiles(join(outDir, 'app'))) {
+  for (const name of bareSpecifiers(readFileSync(file, 'utf8'))) required.add(name);
+}
+
+const missing = [...required].filter(
+  (name) => !existsSync(join(outDir, 'node_modules', name)),
+);
+if (missing.length > 0) {
+  fail(
+    `アプリが import しているパッケージが同梱されていません: ${missing.join(', ')}\n` +
+      'package.json の dependencies に入っているか確認してください。',
+  );
+}
+console.log(`[package:win] 同梱漏れの検査を通過しました（import ${required.size} 件）。`);
 
 // --- ZIP ---
 execFileSync(
