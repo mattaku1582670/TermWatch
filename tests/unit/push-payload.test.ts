@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { buildIdlePayload } from '../../src/notify/push-sender.js';
 import type { SubscriptionStore } from '../../src/notify/subscription-store.js';
@@ -72,5 +73,38 @@ describe('送信失敗時の扱い', () => {
     vi.restoreAllMocks();
     vi.doUnmock('web-push');
     vi.resetModules();
+  });
+});
+
+/**
+ * 送信の前提条件。
+ *
+ * いずれも実機で失敗して判明したもの（D-032）。
+ * コードから読み取れない外部の制約なので、テストで固定する。
+ */
+describe('送信の前提条件', () => {
+  it('VAPID の subject が到達しない宛先になっていない', async () => {
+    // Apple は mailto:...@localhost を 403 BadJwtToken で拒否する。
+    const source = await readFile(
+      new URL('../../src/notify/push-sender.ts', import.meta.url),
+      'utf8',
+    );
+    const match = /const VAPID_SUBJECT = '([^']+)'/.exec(source);
+    expect(match).not.toBeNull();
+    const subject = match?.[1] ?? '';
+    expect(subject).not.toContain('localhost');
+    expect(subject).toMatch(/^(mailto:|https:\/\/)/);
+  });
+
+  it('プロキシを環境変数から読む', async () => {
+    const { proxyFromEnv } = await import('../../src/notify/push-sender.js');
+    // web-push は環境変数を自分では読まない。渡さないと社内網で ETIMEDOUT になる。
+    expect(proxyFromEnv({ HTTPS_PROXY: 'http://proxy:8080' } as NodeJS.ProcessEnv)).toBe(
+      'http://proxy:8080',
+    );
+    expect(proxyFromEnv({ http_proxy: 'http://proxy:8080' } as NodeJS.ProcessEnv)).toBe(
+      'http://proxy:8080',
+    );
+    expect(proxyFromEnv({} as NodeJS.ProcessEnv)).toBeUndefined();
   });
 });

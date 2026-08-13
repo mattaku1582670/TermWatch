@@ -13,8 +13,32 @@ import type { PushSubscriptionRecord, SubscriptionStore } from './subscription-s
 
 /** 通知本文へ載せるコマンド名の上限。 */
 const MAX_COMMAND_LENGTH = 60;
-/** VAPID の連絡先。実在のアドレスを持たないためローカルを指す。 */
-const VAPID_SUBJECT = 'mailto:termwatch@localhost';
+
+/**
+ * VAPID の連絡先。
+ *
+ * Apple のプッシュ網は到達しない宛先を受け付けない。
+ * `mailto:termwatch@localhost` は `403 BadJwtToken` で拒否されることを実測した（D-032）。
+ * 個人情報を埋め込まずに済むよう、プロジェクトの URL を使う。
+ */
+const VAPID_SUBJECT = 'https://github.com/mattaku1582670/TermWatch';
+
+/**
+ * 外向き通信に使うプロキシ。
+ *
+ * `web-push` は環境変数を自動では読まないため、明示的に渡す必要がある。
+ * 社内ネットワークなどプロキシ必須の環境では、渡さないと接続が ETIMEDOUT で
+ * 失敗し続ける（実測。D-032）。
+ *
+ * 値には資格情報が含まれることがあるため、ログへ一切出さない。
+ */
+export function proxyFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  for (const key of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy']) {
+    const value = env[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return undefined;
+}
 
 export interface NotificationPayload {
   readonly title: string;
@@ -105,23 +129,28 @@ export class PushSender {
 
   /**
    * 購読中のすべての端末へ送る。
-   * 失効した購読（404/410）は保存先から取り除く。
+   *
+   * 取り除くのは失効した購読（404/410）だけにする。
+   * 403 は「購読が消えた」ではなく、こちら側の VAPID 設定が誤っているときにも返る
+   * （`BadJwtToken`。実測。D-032）。403 で消すと、設定ミスのたびに
+   * 正常な購読まで失われ、利用者は毎回登録し直すことになる。
    */
   async send(payload: NotificationPayload): Promise<void> {
     const subscriptions = this.store.list();
     if (subscriptions.length === 0) return;
 
     const body = JSON.stringify(payload);
+    const proxy = proxyFromEnv();
     await Promise.all(
       subscriptions.map(async (subscription: PushSubscriptionRecord) => {
         try {
-          await webpush.sendNotification(subscription, body);
+          await webpush.sendNotification(subscription, body, proxy === undefined ? {} : { proxy });
         } catch (error) {
           const status = (error as { statusCode?: number }).statusCode;
-          if (status === 404 || status === 410 || status === 403) {
+          if (status === 404 || status === 410) {
             this.store.remove(subscription.endpoint);
           }
-          // 送信失敗の詳細は出さない。購読情報が混ざるため。
+          // 送信失敗の詳細は出さない。購読情報とプロキシの資格情報が混ざるため。
         }
       }),
     );
