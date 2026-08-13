@@ -35,4 +35,12 @@ export default tseslint.config(
       },
     },
   },
+  {
+    files: ['web/public/sw.js'],
+    languageOptions: {
+      globals: {
+        self: 'readonly',
+      },
+    },
+  },
 );
