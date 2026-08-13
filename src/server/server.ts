@@ -15,6 +15,7 @@ import { checkSameOrigin } from '../security/origin.js';
 import { FailureRateLimiter } from '../security/rate-limit.js';
 import type { SessionAuth } from '../security/tokens.js';
 import type { PtySession } from '../pty/session.js';
+import type { PushService } from '../notify/push-service.js';
 import { ControlManager } from './control.js';
 import { readAsset } from './http-assets.js';
 import { parseClientMessage } from './schema.js';
@@ -61,6 +62,8 @@ export interface ServerOptions {
   readonly controlMinutes: number;
   readonly version: string;
   readonly bufferLines: number;
+  /** 未指定なら購読APIを提供しない（通知を無効化した場合）。 */
+  readonly push?: PushService | null;
 }
 
 interface ClientState {
@@ -217,6 +220,8 @@ export class TermWatchServer {
         "img-src 'self' data:",
         "font-src 'self' data:",
         "connect-src 'self' ws: wss:",
+        "worker-src 'self'",
+        "manifest-src 'self'",
         "base-uri 'none'",
         "form-action 'none'",
         "frame-ancestors 'none'",
@@ -247,6 +252,11 @@ export class TermWatchServer {
       const authorized = this.isAuthorized(req);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ authorized }));
+      return;
+    }
+
+    if (path.startsWith('/api/push/')) {
+      this.handlePushRequest(path, req, res);
       return;
     }
 
@@ -350,6 +360,110 @@ export class TermWatchServer {
       res.setHeader('Set-Cookie', cookie);
       this.sendJson(res, 200, { ok: true });
     });
+  }
+
+  /**
+   * 購読APIを処理する。
+   *
+   * 購読情報は「その端末へ通知を送れる資格」そのものなので、
+   * 認証と Origin 検証を通さずに受け付けてはならない。
+   * 保存内容はログ・エラー本文へ出さない。
+   */
+  private handlePushRequest(path: string, req: IncomingMessage, res: ServerResponse): void {
+    this.securityHeaders(res, false);
+
+    const originCheck = checkSameOrigin(
+      req.headers.host,
+      typeof req.headers.origin === 'string' ? req.headers.origin : undefined,
+      typeof req.headers['x-forwarded-host'] === 'string'
+        ? req.headers['x-forwarded-host']
+        : undefined,
+    );
+    if (!originCheck.ok) {
+      this.sendJson(res, 403, { error: 'forbidden' });
+      return;
+    }
+    if (!this.isAuthorized(req)) {
+      this.sendJson(res, 401, { error: 'unauthorized' });
+      return;
+    }
+
+    const push = this.options.push ?? null;
+    if (push === null) {
+      this.sendJson(res, 404, { error: 'not-found' });
+      return;
+    }
+
+    if (path === '/api/push/key' && req.method === 'GET') {
+      this.sendJson(res, 200, { publicKey: push.publicKey });
+      return;
+    }
+
+    if (path === '/api/push/subscribe' && (req.method === 'POST' || req.method === 'DELETE')) {
+      const isDelete = req.method === 'DELETE';
+      this.readJsonBody(req, res, (parsed) => {
+        if (isDelete) {
+          const endpoint =
+            typeof parsed === 'object' && parsed !== null
+              ? (parsed as Record<string, unknown>)['endpoint']
+              : undefined;
+          if (typeof endpoint !== 'string') {
+            this.sendJson(res, 400, { error: 'invalid-request' });
+            return;
+          }
+          push.unsubscribe(endpoint);
+          res.writeHead(204);
+          res.end();
+          return;
+        }
+        if (!push.subscribe(parsed)) {
+          this.sendJson(res, 400, { error: 'invalid-request' });
+          return;
+        }
+        res.writeHead(204);
+        res.end();
+      });
+      return;
+    }
+
+    this.sendJson(res, 404, { error: 'not-found' });
+  }
+
+  /** 小さなJSON本文を読み取る。上限を超えたら 413。 */
+  private readJsonBody(
+    req: IncomingMessage,
+    res: ServerResponse,
+    onBody: (parsed: unknown) => void,
+  ): void {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    let aborted = false;
+
+    req.on('data', (chunk: Buffer) => {
+      if (aborted) return;
+      size += chunk.length;
+      if (size > 4096) {
+        aborted = true;
+        this.sendJson(res, 413, { error: 'too-large' });
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on('end', () => {
+      if (aborted) return;
+      try {
+        onBody(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch {
+        this.sendJson(res, 400, { error: 'invalid-request' });
+      }
+    });
+  }
+
+  /** 接続中の認証済み端末数。通知の抑制判定に使う。 */
+  get activeClientCount(): number {
+    return this.clients.size;
   }
 
   private isSecureRequest(req: IncomingMessage): boolean {
