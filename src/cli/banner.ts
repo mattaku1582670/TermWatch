@@ -14,6 +14,8 @@ export interface BannerInput {
   readonly controlMinutes: number;
   /** 表示用に整形済みのペアリングコード。--local-only では null。 */
   readonly pairingCode: string | null;
+  /** 通知までの秒数。無効なら null。 */
+  readonly notifyIdleSeconds: number | null;
 }
 
 /**
@@ -50,6 +52,11 @@ export function buildBanner(input: BannerInput): string {
       input.recording
         ? '  記録         : 有効（--record 指定。保存先の取り扱いに注意してください）'
         : '  記録         : 無効（ターミナル内容はディスクへ保存されません）',
+    );
+    lines.push(
+      input.notifyIdleSeconds === null
+        ? '  通知         : 無効'
+        : `  通知         : 出力が${input.notifyIdleSeconds}秒止まったら通知（要ホーム画面追加）`,
     );
     lines.push('');
     lines.push('スマートフォンから接続する手順:');

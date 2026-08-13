@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { HELP_TEXT, parseArgs } from './args.js';
 import { resolveWorkdir } from './workdir.js';
@@ -8,6 +9,11 @@ import { LocalIo } from '../pty/local-io.js';
 import { PtySession, type ExitInfo } from '../pty/session.js';
 import { SessionAuth } from '../security/tokens.js';
 import { TermWatchServer } from '../server/server.js';
+import { IdleWatcher } from '../notify/idle-watcher.js';
+import { configDir } from '../notify/paths.js';
+import { buildIdlePayload, loadOrCreateVapidKeys, PushSender } from '../notify/push-sender.js';
+import { createPushService, type PushService } from '../notify/push-service.js';
+import { SubscriptionStore } from '../notify/subscription-store.js';
 
 /**
  * TermWatch のエントリーポイント。
@@ -85,6 +91,22 @@ export async function main(argv: readonly string[]): Promise<number> {
   const auth = new SessionAuth();
   let server: TermWatchServer | null = null;
 
+  // 通知は付随機能。購読が無ければ何も起きず、失敗しても本体を止めない。
+  let pushService: PushService | null = null;
+  let pushSender: PushSender | null = null;
+  if (options.notify && !options.localOnly) {
+    try {
+      const dir = configDir();
+      const store = new SubscriptionStore(join(dir, 'subscriptions.json'));
+      const keys = loadOrCreateVapidKeys(join(dir, 'vapid.json'));
+      pushSender = new PushSender(keys, store);
+      pushService = createPushService(pushSender, store);
+    } catch {
+      // 鍵を用意できなくても TermWatch は動かす。内容はログへ出さない。
+      process.stderr.write('通知機能を初期化できませんでした。通知は無効のまま起動します。\n');
+    }
+  }
+
   if (!options.localOnly) {
     server = new TermWatchServer({
       port: options.port,
@@ -94,6 +116,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       controlMinutes: options.controlMinutes,
       bufferLines: options.bufferLines,
       version,
+      push: pushService,
     });
     const listenResult = await server.listen();
     if (!listenResult.ok) {
@@ -130,6 +153,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       recording: options.recordPath !== null,
       controlMinutes: options.controlMinutes,
       pairingCode: options.localOnly ? null : auth.getPairingCodeForDisplay(),
+      notifyIdleSeconds: pushService === null ? null : options.notifyIdleSeconds,
     })}\n`,
   );
 
@@ -146,6 +170,25 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
 
   localIo.attach();
+
+  let idleWatcher: IdleWatcher | null = null;
+  if (pushSender !== null) {
+    const sender = pushSender;
+    const idleMs = options.notifyIdleSeconds * 1000;
+    const watcher = new IdleWatcher({
+      idleMs,
+      onIdle: () => {
+        // スマートフォンが画面を開いている間は送らない。
+        // iOS では画面を閉じると WebSocket が切れるため、これで判定できる。
+        if ((server?.activeClientCount ?? 0) > 0) return;
+        void sender.send(buildIdlePayload(session.displayCommand, idleMs));
+      },
+    });
+    idleWatcher = watcher;
+    session.on('data', () => {
+      watcher.noteOutput();
+    });
+  }
 
   if (server !== null) {
     server.onControlActiveChange = (active: boolean): void => {
@@ -176,6 +219,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     if (cleanedUp) return;
     cleanedUp = true;
     if (titleTimer !== null) clearInterval(titleTimer);
+    idleWatcher?.stop();
     auth.revoke();
     localIo.restore();
     await server?.close();
