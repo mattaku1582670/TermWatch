@@ -157,11 +157,21 @@ describe('購読API', () => {
     expect(body.publicKey).toBe('test-public-key');
   });
 
-  it('Origin が違えば拒否する', async () => {
+  it('Origin ヘッダーが無い GET も許可する（同一オリジンGETにOriginを付けないブラウザ挙動への対応）', async () => {
     const cookie = await pair();
     const response = await fetch(`${origin()}/api/push/key`, {
-      headers: { Origin: 'https://evil.example', Cookie: cookie },
+      headers: { Cookie: cookie },
     });
+    expect(response.status).toBe(200);
+  });
+
+  it('POST で Origin が違えば拒否する', async () => {
+    const cookie = await pair();
+    const response = await post(
+      '/api/push/subscribe',
+      { endpoint: 'https://web.push.apple.com/abc', keys: { p256dh: 'a', auth: 'b' } },
+      { Cookie: cookie, Origin: 'https://evil.example' },
+    );
     expect(response.status).toBe(403);
   });
 
@@ -169,6 +179,23 @@ describe('購読API', () => {
     const cookie = await pair();
     const response = await post('/api/push/subscribe', { endpoint: 'not-a-url' }, { Cookie: cookie });
     expect(response.status).toBe(400);
+  });
+
+  it('解除時に不正な endpoint（https以外）を拒否する', async () => {
+    const cookie = await pair();
+    const response = await fetch(`${origin()}/api/push/subscribe`, {
+      method: 'DELETE',
+      headers: { Origin: origin(), Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: 'http://not-https.example/abc' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('/api/push/key への POST は 405 と Allow ヘッダーを返す', async () => {
+    const cookie = await pair();
+    const response = await post('/api/push/key', {}, { Cookie: cookie });
+    expect(response.status).toBe(405);
+    expect(response.headers.get('allow')).toContain('GET');
   });
 
   it('購読と解除ができる', async () => {

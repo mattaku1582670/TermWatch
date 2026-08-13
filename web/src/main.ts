@@ -599,7 +599,7 @@ function markNotifyEnabled(): void {
 }
 
 async function enableNotifications(): Promise<void> {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
     setNotice('この端末では通知を使えません。ホーム画面へ追加してから開いてください。', 'warn');
     return;
   }

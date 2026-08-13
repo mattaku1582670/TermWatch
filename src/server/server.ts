@@ -16,6 +16,7 @@ import { FailureRateLimiter } from '../security/rate-limit.js';
 import type { SessionAuth } from '../security/tokens.js';
 import type { PtySession } from '../pty/session.js';
 import type { PushService } from '../notify/push-service.js';
+import { isValidEndpoint } from '../notify/subscription-store.js';
 import { ControlManager } from './control.js';
 import { readAsset } from './http-assets.js';
 import { parseClientMessage } from './schema.js';
@@ -355,16 +356,22 @@ export class TermWatchServer {
   private handlePushRequest(path: string, req: IncomingMessage, res: ServerResponse): void {
     this.securityHeaders(res, false);
 
-    const originCheck = checkSameOrigin(
-      req.headers.host,
-      typeof req.headers.origin === 'string' ? req.headers.origin : undefined,
-      typeof req.headers['x-forwarded-host'] === 'string'
-        ? req.headers['x-forwarded-host']
-        : undefined,
-    );
-    if (!originCheck.ok) {
-      this.sendJson(res, 403, { error: 'forbidden' });
-      return;
+    // Origin検証は状態を変更する POST / DELETE だけに限定する。
+    // ブラウザは同一オリジンの GET に Origin ヘッダーを付けないため、
+    // GET にまで検証を課すと正規のリクエストまで拒否してしまう
+    // （GET /api/session と同じ理由）。GET でもセッション認証は必須のまま。
+    if (req.method === 'POST' || req.method === 'DELETE') {
+      const originCheck = checkSameOrigin(
+        req.headers.host,
+        typeof req.headers.origin === 'string' ? req.headers.origin : undefined,
+        typeof req.headers['x-forwarded-host'] === 'string'
+          ? req.headers['x-forwarded-host']
+          : undefined,
+      );
+      if (!originCheck.ok) {
+        this.sendJson(res, 403, { error: 'forbidden' });
+        return;
+      }
     }
     if (!this.isAuthorized(req)) {
       this.sendJson(res, 401, { error: 'unauthorized' });
@@ -377,12 +384,22 @@ export class TermWatchServer {
       return;
     }
 
-    if (path === '/api/push/key' && req.method === 'GET') {
+    if (path === '/api/push/key') {
+      if (req.method !== 'GET') {
+        res.writeHead(405, { Allow: 'GET' });
+        res.end();
+        return;
+      }
       this.sendJson(res, 200, { publicKey: push.publicKey });
       return;
     }
 
-    if (path === '/api/push/subscribe' && (req.method === 'POST' || req.method === 'DELETE')) {
+    if (path === '/api/push/subscribe') {
+      if (req.method !== 'POST' && req.method !== 'DELETE') {
+        res.writeHead(405, { Allow: 'POST, DELETE' });
+        res.end();
+        return;
+      }
       const isDelete = req.method === 'DELETE';
       this.readJsonBody(req, res, (parsed) => {
         if (isDelete) {
@@ -390,7 +407,7 @@ export class TermWatchServer {
             typeof parsed === 'object' && parsed !== null
               ? (parsed as Record<string, unknown>)['endpoint']
               : undefined;
-          if (typeof endpoint !== 'string') {
+          if (!isValidEndpoint(endpoint)) {
             this.sendJson(res, 400, { error: 'invalid-request' });
             return;
           }

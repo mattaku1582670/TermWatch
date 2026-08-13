@@ -603,7 +603,7 @@ iOS のバックグラウンド化のタイミングと WebSocket 切断のタ�
 **MT-18 で実機検証すること**（本判断の前提そのものの検証）。
 
 **永続状態について**: TermWatch にとって初めて、プロセス終了後も残るファイルを持つ
-（`docs/notify/paths.ts` の `configDir()`、既定 `%APPDATA%\TermWatch`）。
+（`src/notify/paths.ts` の `configDir()`、既定 `%APPDATA%\TermWatch`）。
 置くのは VAPID 鍵（`push-sender.ts`）と購読情報（endpoint・鍵、`subscription-store.ts`）
 の 2 種類のみで、ターミナルの内容や送受信履歴は保存しない。`--record` の
 「既定では何も保存しない」という方針（D-標準）は変えていない。

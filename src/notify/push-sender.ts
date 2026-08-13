@@ -44,11 +44,7 @@ export function buildIdlePayload(command: string, idleMs: number): NotificationP
   };
 }
 
-/**
- * VAPID 鍵を読み込む。無ければ生成して保存する。
- * 秘密鍵はスマートフォンへ渡さず、ログにも出さない。
- */
-export function loadOrCreateVapidKeys(filePath: string): VapidKeys {
+function readVapidKeys(filePath: string): VapidKeys | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(filePath, 'utf8'));
     if (typeof parsed === 'object' && parsed !== null) {
@@ -60,8 +56,22 @@ export function loadOrCreateVapidKeys(filePath: string): VapidKeys {
       }
     }
   } catch {
-    // 読めなければ作り直す。
+    // 読めない。呼び出し側で作り直すか判断する。
   }
+  return null;
+}
+
+/**
+ * VAPID 鍵を読み込む。無ければ生成して保存する。
+ * 秘密鍵はスマートフォンへ渡さず、ログにも出さない。
+ *
+ * 複数プロセスが同時に初回起動した場合に備え、書き込みは `wx`（排他生成）で
+ * 行う。既に他方が書き終えていれば書き込みは失敗するので、その場合は
+ * 自分が生成した鍵を捨てて、先に書き込まれたファイルを読み直す（先勝ち）。
+ */
+export function loadOrCreateVapidKeys(filePath: string): VapidKeys {
+  const existing = readVapidKeys(filePath);
+  if (existing !== null) return existing;
 
   const generated = webpush.generateVAPIDKeys();
   const keys: VapidKeys = {
@@ -69,8 +79,16 @@ export function loadOrCreateVapidKeys(filePath: string): VapidKeys {
     privateKey: generated.privateKey,
   };
   mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, JSON.stringify(keys), { encoding: 'utf8', mode: 0o600 });
-  return keys;
+  try {
+    writeFileSync(filePath, JSON.stringify(keys), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    return keys;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      const winner = readVapidKeys(filePath);
+      if (winner !== null) return winner;
+    }
+    throw error;
+  }
 }
 
 export class PushSender {
@@ -100,7 +118,7 @@ export class PushSender {
           await webpush.sendNotification(subscription, body);
         } catch (error) {
           const status = (error as { statusCode?: number }).statusCode;
-          if (status === 404 || status === 410) {
+          if (status === 404 || status === 410 || status === 403) {
             this.store.remove(subscription.endpoint);
           }
           // 送信失敗の詳細は出さない。購読情報が混ざるため。
