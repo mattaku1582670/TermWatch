@@ -18,6 +18,10 @@ export interface ParsedOptions {
   readonly controlMinutes: number;
   readonly recordPath: string | null;
   readonly localOnly: boolean;
+  /** 出力停止時にスマートフォンへ通知するか。 */
+  readonly notify: boolean;
+  /** 通知までの静止時間（秒）。 */
+  readonly notifyIdleSeconds: number;
 }
 
 export type ParseResult =
@@ -60,6 +64,8 @@ export function parseArgs(argv: readonly string[]): ParseResult {
   let controlMinutes = DEFAULT_CONTROL_MINUTES;
   let recordPath: string | null = null;
   let localOnly = false;
+  let notify = true;
+  let notifyIdleSeconds = 30;
 
   let i = 0;
   let separatorFound = false;
@@ -130,6 +136,25 @@ export function parseArgs(argv: readonly string[]): ParseResult {
         break;
       }
 
+      case '--no-notify': {
+        notify = false;
+        break;
+      }
+
+      case '--notify-idle-seconds': {
+        const raw = argv[i + 1];
+        i += 1;
+        const value = Number(raw);
+        if (!Number.isInteger(value) || value < 1 || value > 3600) {
+          return {
+            kind: 'error',
+            message: '--notify-idle-seconds は1〜3600の整数で指定してください。',
+          };
+        }
+        notifyIdleSeconds = value;
+        break;
+      }
+
       default:
         if (token.startsWith('-')) {
           return { kind: 'error', message: `不明なオプションです: ${token}` };
@@ -161,7 +186,7 @@ export function parseArgs(argv: readonly string[]): ParseResult {
 
   return {
     kind: 'run',
-    options: { cwd, port, bufferLines, controlMinutes, recordPath, localOnly },
+    options: { cwd, port, bufferLines, controlMinutes, recordPath, localOnly, notify, notifyIdleSeconds },
     command,
     args: rest.slice(1),
   };
@@ -185,6 +210,8 @@ export const HELP_TEXT = `TermWatch - CLIエージェントをスマートフォ
   --control-minutes <number> スマートフォン操作権の有効時間・分（既定: ${DEFAULT_CONTROL_MINUTES}）
   --record <path>           指定時のみ生PTY出力をファイルへ保存する（既定: 保存しない）
   --local-only              スマートフォン接続を無効化し、ローカル実行だけを行う
+  --notify-idle-seconds <秒> 出力停止から通知までの時間（既定: 30）
+  --no-notify               スマートフォンへの通知を無効化する
   --help, -h                このヘルプを表示する
   --version, -v             バージョンを表示する
 

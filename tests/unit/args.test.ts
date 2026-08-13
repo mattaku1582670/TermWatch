@@ -33,6 +33,8 @@ describe('parseArgs', () => {
       controlMinutes: DEFAULT_CONTROL_MINUTES,
       recordPath: null,
       localOnly: false,
+      notify: true,
+      notifyIdleSeconds: 30,
     });
   });
 
@@ -60,6 +62,8 @@ describe('parseArgs', () => {
       controlMinutes: 3,
       recordPath: 'log.txt',
       localOnly: true,
+      notify: true,
+      notifyIdleSeconds: 30,
     });
   });
 
@@ -92,5 +96,32 @@ describe('parseArgs', () => {
 
   it('未知のオプションを拒否する', () => {
     expect(parseArgs(['--unknown', '--', 'codex']).kind).toBe('error');
+  });
+});
+
+describe('通知オプション', () => {
+  it('既定は有効で30秒', () => {
+    const result = parseArgs(['--', 'codex']);
+    if (result.kind !== 'run') throw new Error('run ではない');
+    expect(result.options.notify).toBe(true);
+    expect(result.options.notifyIdleSeconds).toBe(30);
+  });
+
+  it('--no-notify で無効になる', () => {
+    const result = parseArgs(['--no-notify', '--', 'codex']);
+    if (result.kind !== 'run') throw new Error('run ではない');
+    expect(result.options.notify).toBe(false);
+  });
+
+  it('--notify-idle-seconds で変更できる', () => {
+    const result = parseArgs(['--notify-idle-seconds', '60', '--', 'codex']);
+    if (result.kind !== 'run') throw new Error('run ではない');
+    expect(result.options.notifyIdleSeconds).toBe(60);
+  });
+
+  it('範囲外や数値でない値は使い方エラーにする', () => {
+    expect(parseArgs(['--notify-idle-seconds', '0', '--', 'codex']).kind).toBe('error');
+    expect(parseArgs(['--notify-idle-seconds', 'abc', '--', 'codex']).kind).toBe('error');
+    expect(parseArgs(['--notify-idle-seconds', '99999', '--', 'codex']).kind).toBe('error');
   });
 });
