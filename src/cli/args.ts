@@ -142,16 +142,10 @@ export function parseArgs(argv: readonly string[]): ParseResult {
       }
 
       case '--notify-idle-seconds': {
-        const raw = argv[i + 1];
+        const result = parseIntegerOption('--notify-idle-seconds', argv[i + 1], 1, 3600);
+        if (isErr(result)) return { kind: 'error', message: result.error };
+        notifyIdleSeconds = result;
         i += 1;
-        const value = Number(raw);
-        if (!Number.isInteger(value) || value < 1 || value > 3600) {
-          return {
-            kind: 'error',
-            message: '--notify-idle-seconds は1〜3600の整数で指定してください。',
-          };
-        }
-        notifyIdleSeconds = value;
         break;
       }
 
