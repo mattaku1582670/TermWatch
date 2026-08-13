@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+import { connect } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PtySession } from '../../src/pty/session.js';
 import { SessionAuth } from '../../src/security/tokens.js';
@@ -186,6 +187,74 @@ describe('購読API', () => {
       body: JSON.stringify({ endpoint: subscription.endpoint }),
     });
     expect(removed.status).toBe(204);
+  });
+});
+
+/**
+ * クライアントが本文送信の途中でソケットを切断した場合の挙動。
+ *
+ * `IncomingMessage` は購読者のいない `error` を発火すると EventEmitter の
+ * 仕様で例外を再スローする。これによりプロセス全体が落ちないこと（＝
+ * サーバーがその後も応答を返せること）を確認する。
+ */
+describe('本文読み取り中の切断', () => {
+  /**
+   * 宣言した Content-Length より少ないバイト数だけ送ってからソケットを
+   * 破棄する。サーバー側は本文の続きを待っている状態のまま接続が切れるため、
+   * `IncomingMessage` の `error`（ECONNRESET相当）が発火する。
+   */
+  async function sendPartialBodyThenDestroy(
+    path: string,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const socket = connect(port, '127.0.0.1');
+      socket.once('error', () => {
+        // クライアント側ソケットの後始末時に出るエラーは無視する。
+        resolve();
+      });
+      socket.once('connect', () => {
+        const bodyStart = '{"endpoint":"https://example.com/partial"';
+        const headerLines = [
+          `POST ${path} HTTP/1.1`,
+          `Host: 127.0.0.1:${port}`,
+          `Origin: ${origin()}`,
+          'Content-Type: application/json',
+          // 実際に送るバイト数より大きく宣言し、サーバーに続きを待たせる。
+          'Content-Length: 999',
+          ...Object.entries(extraHeaders).map(([key, value]) => `${key}: ${value}`),
+          '',
+          '',
+        ];
+        socket.write(headerLines.join('\r\n') + bodyStart, (err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          socket.destroy();
+          resolve();
+        });
+      });
+    });
+  }
+
+  it('/api/push/subscribe への本文送信中に切断してもサーバーが落ちない', async () => {
+    const cookie = await pair();
+    await sendPartialBodyThenDestroy('/api/push/subscribe', { Cookie: cookie });
+
+    // サーバープロセスが例外で落ちていれば、以降のリクエストはすべて失敗する。
+    const response = await fetch(`${origin()}/api/push/key`, {
+      headers: { Origin: origin(), Cookie: cookie },
+    });
+    expect(response.status).toBe(200);
+  });
+
+  it('/api/pair への本文送信中に切断してもサーバーが落ちない', async () => {
+    await sendPartialBodyThenDestroy('/api/pair');
+
+    // サーバープロセスが例外で落ちていなければ、通常どおりペアリングできる。
+    const cookie = await pair();
+    expect(cookie).toContain('termwatch_session=');
   });
 });
 

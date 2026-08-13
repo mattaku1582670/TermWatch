@@ -309,24 +309,7 @@ export class TermWatchServer {
       return;
     }
 
-    let size = 0;
-    const chunks: Buffer[] = [];
-    let aborted = false;
-
-    req.on('data', (chunk: Buffer) => {
-      if (aborted) return;
-      size += chunk.length;
-      if (size > 4096) {
-        aborted = true;
-        this.sendJson(res, 413, { error: 'too-large' });
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-
-    req.on('end', () => {
-      if (aborted) return;
+    this.consumeBody(req, res, (chunks) => {
       let code: unknown;
       try {
         const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -435,6 +418,34 @@ export class TermWatchServer {
     res: ServerResponse,
     onBody: (parsed: unknown) => void,
   ): void {
+    this.consumeBody(req, res, (chunks) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      } catch {
+        this.sendJson(res, 400, { error: 'invalid-request' });
+        return;
+      }
+      onBody(parsed);
+    });
+  }
+
+  /**
+   * リクエスト本文を蓄積する共通処理。
+   *
+   * `data` / `end` に加えて `error` も必ず購読する。クライアントが送信途中で
+   * 切断すると `IncomingMessage` は `error` を発火し、購読者がいないと
+   * EventEmitter の仕様で例外が再スローされプロセス全体が落ちるため。
+   * 応答は一度だけに保つため `aborted` フラグで以降の処理・応答を止める
+   * （切断済みの接続へは書き込まない）。
+   *
+   * 上限（4096バイト）超過時は 413 を返す。この挙動・応答内容は変更しない。
+   */
+  private consumeBody(
+    req: IncomingMessage,
+    res: ServerResponse,
+    onEnd: (chunks: Buffer[]) => void,
+  ): void {
     let size = 0;
     const chunks: Buffer[] = [];
     let aborted = false;
@@ -451,13 +462,15 @@ export class TermWatchServer {
       chunks.push(chunk);
     });
 
+    req.on('error', () => {
+      // 送信途中の切断など。応答先が失われているため、握りつぶして
+      // 二重応答を避ける（aborted により end 側の処理も止める）。
+      aborted = true;
+    });
+
     req.on('end', () => {
       if (aborted) return;
-      try {
-        onBody(JSON.parse(Buffer.concat(chunks).toString('utf8')));
-      } catch {
-        this.sendJson(res, 400, { error: 'invalid-request' });
-      }
+      onEnd(chunks);
     });
   }
 
