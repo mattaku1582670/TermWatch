@@ -8,7 +8,10 @@
 self.addEventListener('push', (event) => {
   let payload = { title: 'TermWatch', body: '出力が止まりました' };
   try {
-    if (event.data) payload = event.data.json();
+    if (event.data) {
+      const parsed = event.data.json();
+      if (parsed !== null) payload = parsed;
+    }
   } catch {
     // 本文を読めなくても通知自体は出す。
   }

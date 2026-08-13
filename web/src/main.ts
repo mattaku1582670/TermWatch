@@ -436,6 +436,12 @@ function showApp(): void {
   }
   fitTerminal();
   connection.start();
+
+  // 登録済みなら押せないようにする。
+  void navigator.serviceWorker?.getRegistration().then(async (registration) => {
+    const subscription = await registration?.pushManager.getSubscription();
+    if (subscription !== null && subscription !== undefined) markNotifyEnabled();
+  });
 }
 
 /**
@@ -571,6 +577,72 @@ document.addEventListener('visibilitychange', () => {
 /* ------------------------------------------------------------------ */
 /* 起動                                                                */
 /* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ */
+/* 通知                                                                */
+/* ------------------------------------------------------------------ */
+
+const notifyToggle = el<HTMLButtonElement>('notify-toggle');
+
+/** base64url の VAPID 公開鍵を Uint8Array へ直す。 */
+function decodeBase64Url(value: string): Uint8Array {
+  const padded = value.replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function markNotifyEnabled(): void {
+  notifyToggle.textContent = '通知は有効です';
+  notifyToggle.disabled = true;
+}
+
+async function enableNotifications(): Promise<void> {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    setNotice('この端末では通知を使えません。ホーム画面へ追加してから開いてください。', 'warn');
+    return;
+  }
+
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') {
+    setNotice('通知が許可されませんでした。', 'warn');
+    return;
+  }
+
+  const registration = await navigator.serviceWorker.register('./sw.js');
+  const keyResponse = await fetch('/api/push/key', { credentials: 'same-origin' });
+  if (!keyResponse.ok) {
+    setNotice('通知の設定を取得できませんでした。', 'warn');
+    return;
+  }
+  const { publicKey } = (await keyResponse.json()) as { publicKey: string };
+
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: decodeBase64Url(publicKey) as BufferSource,
+  });
+
+  const saved = await fetch('/api/push/subscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(subscription.toJSON()),
+  });
+  if (!saved.ok) {
+    setNotice('通知の登録に失敗しました。', 'warn');
+    return;
+  }
+
+  markNotifyEnabled();
+  setNotice('通知を有効にしました。出力が止まるとお知らせします。');
+}
+
+notifyToggle.addEventListener('click', () => {
+  void enableNotifications().catch(() => {
+    setNotice('通知を有効にできませんでした。', 'warn');
+  });
+});
 
 async function bootstrap(): Promise<void> {
   syncViewportHeight();
